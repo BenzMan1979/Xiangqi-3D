@@ -9,7 +9,13 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700;900&display=swap"
       rel="stylesheet"
+      crossorigin
     />
+    <!-- Cross-origin isolation where the host sends no COOP/COEP headers; a no-op when it already is. -->
+    <script>
+      window.coi = { coepCredentialless: () => false };
+    </script>
+    <script src="./coi-serviceworker.min.js"></script>
   </head>
   <body>
     <div id="stage"></div>

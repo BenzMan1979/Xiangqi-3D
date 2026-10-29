@@ -5,8 +5,8 @@
 ## 指令
 
 ```bash
-npm ci
-npm test           # vitest：規則引擎與陣營資料
+npm ci             # postinstall 會把 Fairy-Stockfish 與 coi-serviceworker 複製到 public/（已列入 .gitignore）
+npm test           # vitest：規則引擎、AI、陣營資料與演出模板
 npm run build      # tsc --noEmit + vite build → dist/
 npm run dev
 ```
@@ -29,8 +29,12 @@ npm run dev
 ## 來歷與下一步
 
 專案原本在 `BenzMan1979/MyFiles` 的 `xiangqi-3d/` 資料夾開發，已連同提交歷史搬到此 repo。
-目前完成 P0～P4（規則引擎、陣營與人物、吃子特效與音樂、自寫 AI 引擎三個難度、終局兩段絕招演出）。
-下一步：大師級（Pikafish WASM，需另外取得引擎與 NNUE 檔，專案公開時以 GPL-3.0 開源）、熱門人物專屬演出、P5 連線雙人。
+目前完成 P0～P4（規則引擎、陣營與人物、吃子特效與音樂、AI 四個難度、終局兩段絕招演出）。
+下一步：熱門人物專屬演出、P5 連線雙人；有機會再把大師級換成 Pikafish 並加上 NNUE 權重。
+大師級用 Fairy-Stockfish（`fairy-stockfish-nnue.wasm` npm 套件，GPL-3.0），因為這個開發環境取不到 Pikafish 的 WASM 與權重
+（權重授權另限「非商業」）。它要 SharedArrayBuffer：`vite.config.ts` 的 COOP/COEP 標頭供開發與預覽，部署到 Pages 靠
+`coi-serviceworker`（`index.html` 載入）。`src/ai/fairy.integration.test.ts` 用它當第二個裁判，驗證我們的走法規則。
+網路被擋時 `npm ci` 仍可完成（postinstall 只複製檔案），但沒有引擎檔案時大師按鈕會停用。
 終局演出：人物與模板的對應在 `src/data/ultimates.ts`（新增人物要補一筆，測試會檢查），畫面模板在 `src/fx/ultTemplates.ts`
 （純函式、依進度 t 繪製）。網址加 `?debug` 可用 `__ult('guan-yu', 'finisher')` 單獨預覽；`?slow=3` 放慢演出。
 `src/ai/` 同樣是純邏輯並有測試（含 perft 與規則引擎交叉比對）；改動走子或將軍判斷時兩邊都要跑測試。

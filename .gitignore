@@ -1,2 +1,5 @@
 node_modules/
 dist/
+# Third-party engine files, copied from node_modules by scripts/copy-engine.mjs
+public/engine/vendor/
+public/coi-serviceworker.min.js

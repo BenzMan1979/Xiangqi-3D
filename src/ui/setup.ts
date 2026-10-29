@@ -1,6 +1,7 @@
 import { PIECE_NAMES } from '../core/notation';
 import { PieceType, Side } from '../core/types';
 import { AI_LEVELS, AiLevel } from '../ai/levels';
+import { MasterStatus, checkMaster } from '../ai/uci';
 import { FACTIONS, FACTION_BY_ID, Faction, FactionId } from '../data/factions';
 import { getPortrait, portraitUrl } from '../render/portrait';
 import { CharacterCard } from './characterCard';
@@ -88,13 +89,14 @@ export class SetupScreen {
       btn.className = 'level';
       btn.dataset.level = l.id;
       btn.innerHTML = `<b>${l.name}</b><small>${l.blurb}</small>`;
+      if (l.id === 'master') {
+        // Needs cross-origin isolation and the engine files; stays disabled until that is confirmed.
+        btn.disabled = true;
+        btn.querySelector('small')!.textContent = '檢查中…';
+        void checkMaster().then((status) => this.setMaster(btn, l.blurb, status));
+      }
       levels.append(btn);
     }
-    const master = document.createElement('button');
-    master.className = 'level';
-    master.disabled = true;
-    master.innerHTML = '<b>大師</b><small>即將推出</small>';
-    levels.append(master);
 
     this.root.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach((b) =>
       b.addEventListener('click', () => {
@@ -116,7 +118,19 @@ export class SetupScreen {
     );
   }
 
+  private masterOk = false;
+
+  private setMaster(btn: HTMLButtonElement, blurb: string, status: MasterStatus) {
+    this.masterOk = status.ok;
+    btn.disabled = !status.ok;
+    btn.querySelector('small')!.textContent = status.ok ? blurb : '無法使用';
+    btn.title = status.ok ? '' : (status.reason ?? '');
+    this.renderMode();
+  }
+
   private renderMode() {
+    // A saved master choice falls back to the strongest level that works here.
+    if (this.choice.level === 'master' && !this.masterOk) this.choice.level = 'advanced';
     const { mode, level, human } = this.choice;
     this.root.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach((b) => {
       const on = b.dataset.mode === mode;

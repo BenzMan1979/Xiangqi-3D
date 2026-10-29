@@ -56,6 +56,7 @@ class App {
     this.settingsPanel = new SettingsPanel(this.settings, (s) => this.applySettings(s));
     this.applySettings(this.settings);
     this.view.onSfx = (name) => audio.play(name);
+    this.ai.onFallback = () => this.hud.flash('大師引擎無法啟動，改用高手', 'info');
     this.cinema = new Cinematic({
       sfx: (name) => audio.play(name),
       flash: (color, strength) => this.view.overlay.flash(color, strength),
@@ -172,6 +173,7 @@ class App {
     this.hud.setMatchup(this.mode === 'ai' ? `AI 對戰（${LEVEL_BY_ID[this.level].name}）· ${names}` : `單機雙人 · ${names}`);
     this.view.setBoard(this.game.board, factions);
     this.refresh();
+    if (this.mode === 'ai' && this.level === 'master') this.ai.warmUp();
     const facing = this.mode === 'ai' ? this.human : 'red';
     if (this.stage.side !== facing) void this.turnViewTo(facing);
     this.maybeAiTurn();
