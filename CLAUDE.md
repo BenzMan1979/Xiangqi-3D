@@ -23,7 +23,7 @@ npm run dev
 
 ## 部署
 
-`.github/workflows/deploy.yml`：推送到 `main` 時跑測試、建置並部署 GitHub Pages
+`.github/workflows/deploy.yml`：推送到 `main`（或目前的預設分支）時跑測試、建置並部署 GitHub Pages
 （https://benzman1979.github.io/Xiangqi-3D/）。Pages 來源要在 repo 設定選「GitHub Actions」。
 
 ## 來歷與下一步

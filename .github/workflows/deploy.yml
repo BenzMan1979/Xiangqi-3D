@@ -2,7 +2,7 @@ name: Deploy 3D xiangqi to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/sleepy-lamport-o95mp6]
   workflow_dispatch:
 
 permissions:
