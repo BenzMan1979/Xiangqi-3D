@@ -988,3 +988,227 @@ dialog#settings .actions {
   justify-content: center;
   margin-top: 6px;
 }
+
+/* ---------- Ultimate cinematic ---------- */
+
+#ult {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  overflow: hidden;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.45s;
+  background: radial-gradient(ellipse at 50% 55%, rgba(8, 4, 2, 0.5), rgba(4, 2, 1, 0.9));
+  font-family: var(--serif);
+  user-select: none;
+}
+
+#ult[hidden] {
+  display: none;
+}
+
+#ult.on {
+  opacity: 1;
+}
+
+#ult.out {
+  opacity: 0;
+  transition-duration: 0.4s;
+}
+
+#ult.hold {
+  pointer-events: none;
+  cursor: default;
+  background: radial-gradient(ellipse at 28% 62%, rgba(8, 4, 2, 0.3), rgba(4, 2, 1, 0.66));
+}
+
+#ult.shake {
+  animation: ult-shake 0.5s linear;
+}
+
+@keyframes ult-shake {
+  0%, 100% { transform: translate(0, 0); }
+  15% { transform: translate(-14px, 8px); }
+  30% { transform: translate(12px, -10px); }
+  45% { transform: translate(-9px, -6px); }
+  60% { transform: translate(8px, 7px); }
+  80% { transform: translate(-3px, 2px); }
+}
+
+.ult-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.ult-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10vh;
+  background: #000;
+  transition: transform 0.5s ease-out;
+}
+
+.ult-bar.top {
+  top: 0;
+  transform: translateY(-100%);
+}
+
+.ult-bar.bottom {
+  bottom: 0;
+  transform: translateY(100%);
+}
+
+#ult.on .ult-bar {
+  transform: none;
+}
+
+#ult.hold .ult-bar.top {
+  transform: translateY(-100%);
+}
+
+#ult.hold .ult-bar.bottom {
+  transform: translateY(100%);
+}
+
+.ult-portrait {
+  position: absolute;
+  left: 5vw;
+  bottom: 12vh;
+  height: min(58vh, 540px);
+  aspect-ratio: 256 / 360;
+  border-radius: 18px;
+  opacity: 0;
+  transform: translateX(-130%);
+  transition: transform 0.65s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.4s;
+  filter: drop-shadow(0 0 34px var(--glow, #fff)) drop-shadow(0 12px 24px rgba(0, 0, 0, 0.7));
+}
+
+#ult.portrait-in .ult-portrait {
+  opacity: 1;
+  transform: none;
+}
+
+.ult-center {
+  position: absolute;
+  left: calc(50% + 12vh);
+  top: 30%;
+  width: min(80vw, 860px);
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.ult-who {
+  font-size: clamp(0.85rem, 1.6vw, 1.15rem);
+  letter-spacing: 0.3em;
+  color: var(--gold);
+  opacity: 0;
+  transition: opacity 0.4s 0.1s;
+}
+
+.ult-skill {
+  margin: 6px 0 10px;
+  font-size: clamp(44px, 8.5vw, 112px);
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  color: var(--ult-color, #ffe9b0);
+  -webkit-text-stroke: 8px rgba(20, 6, 0, 0.9);
+  paint-order: stroke fill;
+  text-shadow: 0 0 28px var(--ult-color, #ffe9b0), 0 6px 0 rgba(20, 6, 0, 0.85);
+  opacity: 0;
+  transform: scale(2.4);
+  transition: transform 0.35s cubic-bezier(0.2, 1.4, 0.4, 1), opacity 0.2s;
+}
+
+.ult-line {
+  font-size: clamp(0.85rem, 1.8vw, 1.3rem);
+  line-height: 1.6;
+  color: #f3e3bf;
+  text-shadow: 0 2px 8px #000;
+  opacity: 0;
+  transition: opacity 0.5s 0.35s;
+}
+
+#ult.title-in .ult-who,
+#ult.title-in .ult-line {
+  opacity: 1;
+}
+
+#ult.title-in .ult-skill {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ult-caption {
+  position: absolute;
+  left: calc(50% + 12vh);
+  top: 58%;
+  transform: translate(-50%, -50%) scale(3) rotate(-8deg);
+  font-size: clamp(80px, 17vw, 230px);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  color: #ff3b2f;
+  -webkit-text-stroke: 10px #2a0503;
+  paint-order: stroke fill;
+  text-shadow: 0 0 40px rgba(255, 60, 40, 0.9), 0 8px 0 #3d0905;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s cubic-bezier(0.2, 1.5, 0.4, 1), opacity 0.12s;
+}
+
+#ult.caption-in .ult-caption {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1) rotate(-4deg);
+}
+
+.ult-hint {
+  position: absolute;
+  right: 3vw;
+  bottom: 2.6vh;
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* While the victory backdrop is up, the result dialog moves aside so the commander stays visible. */
+body.ult-hold dialog#result {
+  margin: auto 4vw 6vh auto;
+}
+
+body.ult-hold dialog#result::backdrop {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+@media (max-width: 760px) {
+  .ult-portrait {
+    left: 4vw;
+    bottom: 14vh;
+    height: 32vh;
+  }
+  .ult-center {
+    left: 62%;
+    top: 24%;
+    width: 72vw;
+  }
+  .ult-caption {
+    left: 50%;
+    top: 55%;
+  }
+  .ult-skill {
+    white-space: normal;
+  }
+  body.ult-hold dialog#result {
+    margin: auto auto 4vh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ult.shake {
+    animation: none;
+  }
+}

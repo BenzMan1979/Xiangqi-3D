@@ -18,7 +18,8 @@ export type Sfx =
   | 'slash' // pawn
   | 'seal' // advisor / elephant
   | 'gong' // king
-  | 'victory';
+  | 'victory'
+  | 'ultimate'; // skill name appears in a full-screen ultimate
 
 export type MusicTheme = 'menu' | 'battle';
 
@@ -266,6 +267,18 @@ export class AudioEngine {
         this.gong(t, 98, 0.5, out);
         this.gong(t, 98, 0.3, verb);
         break;
+      case 'ultimate': {
+        // A rising swell of wind and strings into a deep drum hit.
+        const f = this.noiseBurst(t, 1.3, 0.5, 'bandpass', 300, out, 1.2);
+        f.frequency.exponentialRampToValueAtTime(5200, t + 1.2);
+        [1, 1.5, 2, 3].forEach((m, i) => {
+          const o = this.osc('sawtooth', midi(this.root) * m, t, 1.4, 0.05 / (1 + i * 0.4), out, 0.9);
+          o.frequency.exponentialRampToValueAtTime(midi(this.root) * m * 1.5, t + 1.3);
+        });
+        this.boom(t + 1.2, 110, 40, 0.8, 1, out);
+        this.noiseBurst(t + 1.2, 0.35, 0.5, 'lowpass', 900, verb);
+        break;
+      }
       case 'victory': {
         const notes = [0, 2, 4, 7, 9, 12, 16, 19].map((i) => this.root + 12 + i);
         notes.forEach((n, i) => this.pluck(midi(n), t + i * 0.11, 0.3, out, 2.2));

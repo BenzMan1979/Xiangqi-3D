@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { AiPlayer } from './ai/player';
 import { AiLevel, LEVEL_BY_ID } from './ai/levels';
 import { audio } from './audio/audio';
-import { Game } from './core/game';
+import { Game, HistoryEntry } from './core/game';
 import { findKing } from './core/rules';
-import { Side, Square, opponent } from './core/types';
+import { PieceType, Side, Square, opponent } from './core/types';
 import { FACTIONS, FACTION_BY_ID, Faction, characterFor } from './data/factions';
+import { Cinematic } from './fx/cinematic';
 import { BoardView, PickResult, squareToWorld } from './render/boardView';
 import { Stage } from './render/stage';
 import { PIECE_FONT } from './render/textures';
@@ -27,6 +28,7 @@ class App {
   private readonly view: BoardView;
   private readonly hud: Hud;
   private readonly card = new CharacterCard();
+  private readonly cinema: Cinematic;
   private readonly setup: SetupScreen;
   private readonly settingsPanel: SettingsPanel;
   private settings: Settings = loadSettings();
@@ -54,6 +56,13 @@ class App {
     this.settingsPanel = new SettingsPanel(this.settings, (s) => this.applySettings(s));
     this.applySettings(this.settings);
     this.view.onSfx = (name) => audio.play(name);
+    this.cinema = new Cinematic({
+      sfx: (name) => audio.play(name),
+      flash: (color, strength) => this.view.overlay.flash(color, strength),
+      kick: (amount) => this.stage.kick(amount),
+    });
+    // Closing the result dialog (e.g. 檢視棋局) also clears the victory backdrop.
+    document.getElementById('result')!.addEventListener('close', () => this.cinema.dismiss());
     this.setup = new SetupScreen(this.card);
     this.factions = this.resolveFactions(loadChoice().factions);
     this.bindPointer();
@@ -75,6 +84,27 @@ class App {
         const canvas = this.stage.renderer.domElement;
         const hit = this.view.pick(new THREE.Vector2((x / canvas.clientWidth) * 2 - 1, -(y / canvas.clientHeight) * 2 + 1));
         return { ...hit, resolved: this.resolve(hit), selected: this.selected, busy: this.busy };
+      },
+      __cinemaTime: () => (this.cinema.active ? this.cinema.elapsed : -1),
+      /** Plays a character's ultimate on its own, e.g. __ult('guan-yu', 'finisher'). */
+      __ult: (id: string, kind: 'finisher' | 'triumph' = 'finisher', side: Side = 'red') => {
+        for (const faction of FACTIONS) {
+          for (const [role, slot] of Object.entries(faction.roster)) {
+            const character = (Array.isArray(slot) ? slot : [slot]).find((c) => c.id === id);
+            if (!character) continue;
+            void this.cinema.play({
+              kind,
+              character,
+              faction,
+              role: role as PieceType,
+              side,
+              caption: '將死',
+              level: this.settings.fx === 'reduced' ? 'reduced' : 'full',
+            });
+            return true;
+          }
+        }
+        return false;
       },
       /** Starts a position from FEN, e.g. to stage a specific capture. */
       __load: (fen: string) => {
@@ -107,6 +137,7 @@ class App {
   async chooseAndStart() {
     if (this.busy) return;
     this.card.hide();
+    this.cinema.dismiss();
     this.hud.hideResult();
     audio.playMusic('menu');
     const choice = await this.setup.open();
@@ -120,6 +151,7 @@ class App {
   }
 
   private stopAi() {
+    this.cinema.dismiss();
     this.ai.cancel();
     this.thinking = false;
     this.aiToken++;
@@ -179,9 +211,43 @@ class App {
     audio.setTension(inCheck);
   }
 
-  private showResult() {
+  /**
+   * End-of-game sequence. A checkmate first gets the mating piece's ultimate and the loser's
+   * king shattering; any decided game then gets the winning commander's triumph, which stays
+   * behind the result dialog. Draws, and the "off" effect setting, go straight to the dialog.
+   */
+  private async finale(entry?: HistoryEntry) {
     const { status } = this.game;
-    audio.play(status.state === 'over' && status.winner ? 'victory' : 'gong');
+    if (status.state !== 'over') return;
+    const level = this.settings.fx;
+    const winner = status.winner;
+    let played = false;
+    if (winner && level !== 'off') {
+      const faction = this.factions[winner];
+      const cinemaLevel = level === 'full' ? 'full' : 'reduced';
+      if (status.reason === 'checkmate' && entry) {
+        await this.cinema.play({
+          kind: 'finisher',
+          character: characterFor(faction, entry.piece),
+          faction,
+          role: entry.piece.type,
+          side: winner,
+          caption: '將死',
+          level: cinemaLevel,
+        });
+        await this.view.shatterKing(opponent(winner));
+      }
+      await this.cinema.play({
+        kind: 'triumph',
+        character: faction.roster.k,
+        faction,
+        role: 'k',
+        side: winner,
+        level: cinemaLevel,
+      });
+      played = true;
+    }
+    if (!played) audio.play(winner ? 'victory' : 'gong');
     this.hud.showResult(status, (side) => this.label(side));
   }
 
@@ -194,7 +260,7 @@ class App {
     await this.view.animateMove(entry);
     this.refresh();
     if (this.game.isOver) {
-      this.showResult();
+      await this.finale(entry);
     } else {
       if (entry.givesCheck) {
         this.hud.flash('將軍！', 'check');
@@ -241,7 +307,8 @@ class App {
     this.stopAi();
     this.game.resign(side);
     this.refresh();
-    this.showResult();
+    this.busy = true;
+    void this.finale().finally(() => (this.busy = false));
   }
 
   private flipView() {
@@ -388,11 +455,11 @@ async function boot() {
     if ((e.target as HTMLElement).closest('button')) audio.play('ui');
   });
 
-  const glyphs = new Set('帥將仕士相象俥車傌馬炮砲兵卒楚河漢界');
+  const glyphs = new Set('帥將仕士相象俥車傌馬炮砲兵卒楚河漢界死乾坤震巽坎離艮兌');
   for (const f of FACTIONS) {
     glyphs.add(f.name);
     for (const slot of Object.values(f.roster)) {
-      for (const ch of Array.isArray(slot) ? slot : [slot]) for (const g of ch.name) glyphs.add(g);
+      for (const ch of Array.isArray(slot) ? slot : [slot]) for (const g of ch.name + ch.skill.name) glyphs.add(g);
     }
   }
   try {

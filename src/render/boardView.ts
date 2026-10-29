@@ -16,7 +16,7 @@ import {
   createPieceFaceTexture,
   SIDE_COLORS,
 } from './textures';
-import { easeInCubic, easeOutCubic, lerp, tween } from './tween';
+import { easeInCubic, easeOutCubic, lerp, tween, wait } from './tween';
 
 const PIECE_RADIUS = 0.43;
 const PIECE_HEIGHT = 0.22;
@@ -234,7 +234,10 @@ export class BoardView {
     return { piece, group, materials, card };
   }
 
+  private shatteredKing: PieceObject | null = null;
+
   private disposePieces() {
+    this.shatteredKing = null;
     for (const obj of this.pieces.values()) {
       this.root.remove(obj.group);
       obj.materials.forEach((m) => m.dispose());
@@ -471,7 +474,37 @@ export class BoardView {
   }
 
   /** Reverses a move: the piece slides back and any captured piece reappears. */
+  /**
+   * The loser's king breaks apart after a checkmate. Nothing in the move history records this,
+   * so `restoreKing` brings it back when a move is taken back.
+   */
+  async shatterKing(side: Side) {
+    const obj = [...this.pieces.values()].find((o) => o.piece.type === 'k' && o.piece.side === side);
+    if (!obj || this.effects.level === 'off') return;
+    const at = obj.group.position.clone().setY(0.5);
+    const body = obj.materials[0];
+    this.shatteredKing = obj;
+    this.onSfx('explosion');
+    this.stage.kick(0.5);
+    this.overlay.flash('#ffe9b0', 0.5);
+    obj.group.visible = false;
+    this.effects.shatter(at, [body.color.getHex(), 0xf3e3bf, SIDE_COLORS[side]], undefined, 5, 48);
+    this.effects.shockwave(at, 0xffd27a, 3.2, 0.7);
+    this.effects.pillar(at, 0xffd27a, 1.2);
+    await wait(1);
+  }
+
+  private restoreKing() {
+    const obj = this.shatteredKing;
+    this.shatteredKing = null;
+    if (!obj) return;
+    obj.group.visible = true;
+    obj.group.rotation.set(0, 0, 0);
+    obj.materials.forEach((m) => (m.opacity = 1));
+  }
+
   async animateUndo(entry: HistoryEntry) {
+    this.restoreKing();
     this.select(null);
     const mover = this.pieces.get(entry.piece.id)!;
     const start = mover.group.position.clone();
