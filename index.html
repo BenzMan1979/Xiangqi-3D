@@ -33,8 +33,7 @@
       <button id="btn-undo" disabled>悔棋</button>
       <button id="btn-flip">翻轉視角</button>
       <button id="btn-view">俯視</button>
-      <button id="btn-autoflip" aria-pressed="false" title="每步後自動轉到走棋方的視角">自動翻轉</button>
-      <button id="btn-cards" class="on" aria-pressed="true" title="顯示或隱藏棋子上的人物立牌">人物立牌</button>
+      <button id="btn-settings">設定</button>
       <button id="btn-moves" class="mobile-only">棋譜</button>
       <button id="btn-resign" class="danger">認輸</button>
     </nav>
@@ -48,6 +47,23 @@
         <button id="btn-again" class="primary">再來一局</button>
         <button id="btn-review">檢視棋局</button>
       </div>
+    </dialog>
+
+    <dialog id="settings" aria-labelledby="settings-title">
+      <h2 id="settings-title">設定</h2>
+      <label class="row">背景音樂<input id="set-music" type="range" min="0" max="100" /></label>
+      <label class="row">音效<input id="set-sfx" type="range" min="0" max="100" /></label>
+      <fieldset class="row">
+        <legend>特效強度</legend>
+        <div class="segmented">
+          <label><input type="radio" name="fx" value="full" />完整</label>
+          <label><input type="radio" name="fx" value="reduced" />精簡</label>
+          <label><input type="radio" name="fx" value="off" />關閉</label>
+        </div>
+      </fieldset>
+      <label class="row check"><input id="set-cards" type="checkbox" />顯示人物立牌</label>
+      <label class="row check"><input id="set-autoflip" type="checkbox" />每步後自動轉到走棋方視角</label>
+      <div class="actions"><button id="btn-settings-close" class="primary">完成</button></div>
     </dialog>
 
     <div id="setup" hidden>

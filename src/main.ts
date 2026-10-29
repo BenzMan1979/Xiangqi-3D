@@ -1,13 +1,16 @@
 import * as THREE from 'three';
+import { audio } from './audio/audio';
 import { Game } from './core/game';
 import { findKing } from './core/rules';
 import { Side, Square, opponent } from './core/types';
 import { FACTIONS, FACTION_BY_ID, Faction, characterFor } from './data/factions';
-import { BoardView, squareToWorld } from './render/boardView';
+import { BoardView, PickResult, squareToWorld } from './render/boardView';
 import { Stage } from './render/stage';
 import { PIECE_FONT } from './render/textures';
+import { clock } from './render/tween';
 import { CharacterCard } from './ui/characterCard';
 import { Hud, SIDE_NAMES } from './ui/hud';
+import { Settings, SettingsPanel, loadSettings } from './ui/settings';
 import { FactionChoice, SetupScreen, loadChoice } from './ui/setup';
 import './style.css';
 
@@ -23,10 +26,10 @@ class App {
   private readonly hud: Hud;
   private readonly card = new CharacterCard();
   private readonly setup: SetupScreen;
+  private readonly settingsPanel: SettingsPanel;
+  private settings: Settings = loadSettings();
   private selected: Square | null = null;
   private busy = false;
-  private autoFlip = false;
-  private showCards = true;
 
   constructor() {
     this.stage = new Stage(document.getElementById('stage')!);
@@ -36,14 +39,12 @@ class App {
       undo: () => this.undo(),
       flipView: () => this.flipView(),
       toggleViewMode: () => this.toggleViewMode(),
-      toggleAutoFlip: () => (this.autoFlip = !this.autoFlip),
-      toggleCards: () => {
-        this.showCards = !this.showCards;
-        this.view.setShowCards(this.showCards);
-        return this.showCards;
-      },
+      openSettings: () => this.settingsPanel.open(),
       resign: () => this.resign(),
     });
+    this.settingsPanel = new SettingsPanel(this.settings, (s) => this.applySettings(s));
+    this.applySettings(this.settings);
+    this.view.onSfx = (name) => audio.play(name);
     this.setup = new SetupScreen(this.card);
     this.factions = this.resolveFactions(loadChoice());
     this.bindPointer();
@@ -60,7 +61,27 @@ class App {
         return { x: ((p.x + 1) / 2) * canvas.clientWidth, y: ((1 - p.y) / 2) * canvas.clientHeight };
       },
       __game: () => this.game,
+      __view: () => this.view,
+      __pick: (x: number, y: number) => {
+        const canvas = this.stage.renderer.domElement;
+        const hit = this.view.pick(new THREE.Vector2((x / canvas.clientWidth) * 2 - 1, -(y / canvas.clientHeight) * 2 + 1));
+        return { ...hit, resolved: this.resolve(hit), selected: this.selected, busy: this.busy };
+      },
+      /** Starts a position from FEN, e.g. to stage a specific capture. */
+      __load: (fen: string) => {
+        this.game = new Game(fen);
+        this.selected = null;
+        this.view.setBoard(this.game.board, this.factions);
+        this.refresh();
+      },
     });
+  }
+
+  private applySettings(s: Settings) {
+    this.settings = s;
+    audio.setVolumes(s.music, s.sfx);
+    this.view.effects.level = s.fx;
+    this.view.setShowCards(s.cards);
   }
 
   private resolveFactions(choice: FactionChoice): Record<Side, Faction> {
@@ -78,8 +99,10 @@ class App {
     if (this.busy) return;
     this.card.hide();
     this.hud.hideResult();
+    audio.playMusic('menu');
     const choice = await this.setup.open();
     this.startGame(this.resolveFactions(choice));
+    audio.playMusic('battle', choice.red);
   }
 
   private startGame(factions: Record<Side, Faction>) {
@@ -99,10 +122,14 @@ class App {
     this.hud.setHistory(this.game.history);
     this.view.setLastMove(this.game.lastMove);
     this.view.setCheck(inCheck ? findKing(this.game.board, this.game.turn) : null);
+    this.view.overlay.setDanger(inCheck);
+    audio.setTension(inCheck);
   }
 
   private showResult() {
-    this.hud.showResult(this.game.status, (side) => this.label(side));
+    const { status } = this.game;
+    audio.play(status.state === 'over' && status.winner ? 'victory' : 'gong');
+    this.hud.showResult(status, (side) => this.label(side));
   }
 
   private async play(from: Square, to: Square) {
@@ -116,8 +143,12 @@ class App {
     if (this.game.isOver) {
       this.showResult();
     } else {
-      if (entry.givesCheck) this.hud.flash('將軍！', 'check');
-      if (this.autoFlip) await this.turnViewTo(this.game.turn);
+      if (entry.givesCheck) {
+        this.hud.flash('將軍！', 'check');
+        audio.play('check');
+        this.stage.kick(0.1);
+      }
+      if (this.settings.autoFlip) await this.turnViewTo(this.game.turn);
     }
     this.busy = false;
   }
@@ -131,7 +162,7 @@ class App {
     this.selected = null;
     await this.view.animateUndo(entry);
     this.refresh();
-    if (this.autoFlip) await this.turnViewTo(this.game.turn);
+    if (this.settings.autoFlip) await this.turnViewTo(this.game.turn);
     this.busy = false;
   }
 
@@ -169,6 +200,7 @@ class App {
       } else {
         this.selected = s;
         this.view.select(s, this.game.board, this.game.legalMovesFrom(s));
+        audio.play('pick');
       }
       return;
     }
@@ -178,6 +210,26 @@ class App {
     }
     this.selected = null;
     this.view.select(null);
+  }
+
+  /**
+   * Turns a pick into the square the player meant. The lifted selected piece and the portrait
+   * cards stand in front of squares further back, so a legal destination under the pointer wins
+   * unless the pointer is on another of the mover's own pieces; then a piece body; then a card.
+   */
+  private resolve(hit: PickResult): Square | null {
+    const ownOther =
+      hit.body !== null && hit.body !== this.selected && this.game.board[hit.body]?.side === this.game.turn;
+    if (
+      !ownOther &&
+      this.selected !== null &&
+      hit.board !== null &&
+      this.game.legalMovesFrom(this.selected).includes(hit.board)
+    ) {
+      return hit.board;
+    }
+    if (hit.body !== null) return hit.body;
+    return hit.card ?? hit.board;
   }
 
   private subjectAt(s: Square | null) {
@@ -205,7 +257,7 @@ class App {
       window.clearTimeout(hoverTimer);
       this.card.hide();
       if (e.pointerType !== 'mouse') {
-        const hit = this.subjectAt(this.view.pick(ndc(e)));
+        const hit = this.subjectAt(this.resolve(this.view.pick(ndc(e))));
         if (hit) {
           pressTimer = window.setTimeout(() => {
             longPressed = true;
@@ -220,13 +272,13 @@ class App {
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const quick = performance.now() - down.t < 600;
       down = null;
-      if (moved < 8 && quick && !longPressed) this.onSquareClicked(this.view.pick(ndc(e)));
+      if (moved < 8 && quick && !longPressed) this.onSquareClicked(this.resolve(this.view.pick(ndc(e))));
     });
     canvas.addEventListener('pointermove', (e) => {
       if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8) window.clearTimeout(pressTimer);
       if (e.pointerType !== 'mouse') return;
 
-      const s = this.view.pick(ndc(e));
+      const s = this.resolve(this.view.pick(ndc(e)));
       const hit = this.subjectAt(s);
       const actionable = !this.busy && !this.game.isOver && hit?.piece.side === this.game.turn;
       this.view.setHover(actionable ? hit!.piece.id : null);
@@ -255,6 +307,17 @@ class App {
 
 // Piece faces and portraits are drawn onto canvases, so wait for the web font's glyphs first.
 async function boot() {
+  const slow = Number(new URLSearchParams(location.search).get('slow'));
+  if (slow > 0) clock.base = slow;
+
+  // Browsers only allow audio after a user gesture.
+  const unlock = () => audio.unlock();
+  window.addEventListener('pointerdown', unlock);
+  window.addEventListener('keydown', unlock);
+  document.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('button')) audio.play('ui');
+  });
+
   const glyphs = new Set('帥將仕士相象俥車傌馬炮砲兵卒楚河漢界');
   for (const f of FACTIONS) {
     glyphs.add(f.name);

@@ -17,8 +17,7 @@ export interface HudActions {
   undo(): void;
   flipView(): void;
   toggleViewMode(): void;
-  toggleAutoFlip(): boolean;
-  toggleCards(): boolean;
+  openSettings(): void;
   resign(): void;
 }
 
@@ -39,14 +38,7 @@ export class Hud {
     bind('btn-flip', actions.flipView);
     bind('btn-view', actions.toggleViewMode);
     bind('btn-resign', actions.resign);
-    const toggle = (id: string, fn: () => boolean) =>
-      bind(id, () => {
-        const on = fn();
-        $(`#${id}`).classList.toggle('on', on);
-        $(`#${id}`).setAttribute('aria-pressed', String(on));
-      });
-    toggle('btn-autoflip', actions.toggleAutoFlip);
-    toggle('btn-cards', actions.toggleCards);
+    bind('btn-settings', actions.openSettings);
     bind('btn-again', () => {
       this.dialog.close();
       actions.newGame();

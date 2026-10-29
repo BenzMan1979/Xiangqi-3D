@@ -173,6 +173,7 @@ body.ready #loading {
   bottom: max(18px, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
+  width: max-content;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -348,6 +349,7 @@ dialog#result .actions {
     left: 12px;
     right: 12px;
     transform: none;
+    width: auto;
     max-width: none;
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -760,4 +762,170 @@ body.setup-open #moves-panel {
     width: 84px;
     height: 118px;
   }
+}
+
+/* ---------- Effects overlay ---------- */
+
+#fx-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fx-word {
+  position: absolute;
+  font-size: clamp(64px, 9vw, 120px);
+  font-weight: 900;
+  color: var(--c);
+  -webkit-text-stroke: 2px rgba(40, 10, 0, 0.85);
+  text-shadow: 0 0 24px var(--c), 0 5px 0 #2a0d05;
+  animation: fx-word 0.95s ease-out forwards;
+}
+
+@keyframes fx-word {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.4) rotate(-10deg);
+  }
+  14% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(-5deg);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -58%) scale(1.02) rotate(-5deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -75%) scale(1.06) rotate(-5deg);
+  }
+}
+
+#fx-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.danger::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  box-shadow: inset 0 0 140px 40px rgba(220, 30, 20, 0.55);
+  animation: danger 1.1s ease-in-out infinite;
+}
+
+@keyframes danger {
+  50% {
+    box-shadow: inset 0 0 70px 12px rgba(220, 30, 20, 0.22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-word {
+    animation-duration: 0.6s;
+  }
+  body.danger::after {
+    animation: none;
+  }
+}
+
+/* ---------- Settings ---------- */
+
+dialog#settings {
+  width: min(380px, calc(100% - 32px));
+  padding: 22px 24px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--gold);
+  background: radial-gradient(circle at 50% 0%, #4a2f1c, #1c120b 75%);
+  color: var(--ink);
+  font-family: var(--serif);
+}
+
+dialog#settings::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+dialog#settings h2 {
+  margin: 0 0 12px;
+  font-size: 1.3rem;
+  letter-spacing: 0.4em;
+  color: var(--gold);
+  text-align: center;
+}
+
+dialog#settings .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+dialog#settings legend {
+  float: left;
+  padding: 0;
+}
+
+dialog#settings input[type='range'] {
+  flex: 1;
+  max-width: 200px;
+  accent-color: var(--gold);
+}
+
+dialog#settings .check {
+  justify-content: flex-start;
+  font-weight: 500;
+}
+
+dialog#settings input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--gold);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.segmented label {
+  position: relative;
+  padding: 6px 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.segmented input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segmented label:has(input:checked) {
+  background: linear-gradient(#8a5a22, #5e3a14);
+  color: #fff8e6;
+}
+
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+dialog#settings .actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 6px;
 }

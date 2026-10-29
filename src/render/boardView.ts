@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 import { HistoryEntry } from '../core/game';
 import { Board, Piece, PieceType, Side, Square, fileOf, rankOf } from '../core/types';
+import { Sfx } from '../audio/audio';
 import { Faction, characterFor } from '../data/factions';
+import { CaptureScene, playCapture } from '../fx/captures';
+import { Effects } from '../fx/effects';
+import { FxOverlay } from '../fx/overlay';
 import { getPortrait } from './portrait';
 import { Stage } from './stage';
 import {
@@ -10,6 +14,7 @@ import {
   createBoardTexture,
   createFrameTexture,
   createPieceFaceTexture,
+  SIDE_COLORS,
 } from './textures';
 import { easeInCubic, easeOutCubic, lerp, tween } from './tween';
 
@@ -32,6 +37,12 @@ function worldToSquare(p: THREE.Vector3): Square | null {
   // Only accept clicks reasonably close to a grid point.
   if (Math.hypot(p.x + 4 - x, 4.5 - p.z - y) > 0.5) return null;
   return y * 9 + x;
+}
+
+export interface PickResult {
+  body: Square | null;
+  card: Square | null;
+  board: Square | null;
 }
 
 interface PieceObject {
@@ -64,9 +75,16 @@ export class BoardView {
   private hoveredId: string | null = null;
   private faceAngle = 0;
   private time = 0;
+  private readonly liftTokens = new Map<string, number>();
+  readonly effects: Effects;
+  readonly overlay: FxOverlay;
+  /** Sound hook, wired to the audio engine by the app. */
+  onSfx: (name: Sfx) => void = () => {};
 
   constructor(private readonly stage: Stage) {
     stage.scene.add(this.root);
+    this.effects = new Effects(stage);
+    this.overlay = new FxOverlay(stage.camera);
 
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(BOARD_WIDTH + 0.3, BOARD_THICKNESS, BOARD_DEPTH + 0.3),
@@ -168,6 +186,7 @@ export class BoardView {
     card.position.set(0, PIECE_HEIGHT + CARD_H / 2 + 0.01, -0.2);
     card.rotation.x = -0.1;
     const holder = new THREE.Group();
+    holder.userData.card = true;
     holder.add(card);
     return { holder, mats: [mat, edge] };
   }
@@ -292,9 +311,23 @@ export class BoardView {
   private liftPiece(id: string, up: boolean) {
     const obj = this.pieces.get(id);
     if (!obj) return;
+    const token = this.cancelLift(id);
     const from = obj.group.position.y;
     const to = up ? LIFT : 0;
-    tween(0.18, (t) => (obj.group.position.y = lerp(from, to, t)), easeOutCubic);
+    tween(
+      0.18,
+      (t) => {
+        if (this.liftTokens.get(id) === token) obj.group.position.y = lerp(from, to, t);
+      },
+      easeOutCubic,
+    );
+  }
+
+  /** Stops any running lift animation on a piece so another animation can own its position. */
+  private cancelLift(id: string) {
+    const token = (this.liftTokens.get(id) ?? 0) + 1;
+    this.liftTokens.set(id, token);
+    return token;
   }
 
   setLastMove(entry: HistoryEntry | null | undefined) {
@@ -317,9 +350,21 @@ export class BoardView {
     const mover = this.pieces.get(entry.piece.id)!;
     const victim = entry.captured ? this.pieces.get(entry.captured.id) : undefined;
     this.select(null);
+    this.cancelLift(mover.piece.id);
 
     const start = mover.group.position.clone();
     const end = squareToWorld(entry.move.to);
+
+    if (victim && this.effects.level !== 'off') {
+      await playCapture(
+        { fx: this.effects, stage: this.stage, overlay: this.overlay, sfx: (n) => this.onSfx(n) },
+        this.captureScene(entry, mover, victim),
+      );
+      mover.group.position.copy(end);
+      mover.group.rotation.set(0, 0, 0);
+      return;
+    }
+
     const distance = start.distanceTo(end);
     const height = 0.6 + distance * 0.12;
     const duration = 0.35 + Math.min(0.35, distance * 0.04);
@@ -331,11 +376,76 @@ export class BoardView {
       mover.group.position.y = lerp(start.y, 0, t) + Math.sin(Math.PI * t) * height;
       if (victim && !impact && t > 0.8) {
         this.stage.kick(0.18);
+        this.onSfx('crash');
         impact = this.knockAway(victim, start, end);
       }
     });
-    if (!victim) this.stage.kick(0.03);
+    if (!victim) {
+      this.stage.kick(0.03);
+      this.onSfx('place');
+    }
     await impact;
+  }
+
+  private captureScene(entry: HistoryEntry, mover: PieceObject, victim: PieceObject): CaptureScene {
+    const body = victim.materials[0];
+    return {
+      attacker: entry.piece.type,
+      mover: mover.group,
+      victim: victim.group,
+      from: squareToWorld(entry.move.from),
+      to: squareToWorld(entry.move.to),
+      // Mostly wood and ivory, with a few fragments in the side colour.
+      victimColors: [body.color.getHex(), body.color.getHex(), 0xf3e3bf, 0xf3e3bf, SIDE_COLORS[victim.piece.side]],
+      hideVictim: () => (victim.group.visible = false),
+      setVictimOpacity: (o) => victim.materials.forEach((m) => (m.opacity = o)),
+      splitVictim: (cut) => this.splitPiece(victim, cut),
+    };
+  }
+
+  /**
+   * Replaces a piece with two half-discs cut along a world-space direction. The halves keep the
+   * piece's face texture, oriented exactly as the original face.
+   */
+  private splitPiece(obj: PieceObject, cut: THREE.Vector3): [THREE.Group, THREE.Group] {
+    obj.group.visible = false;
+    const phi = this.faceAngle;
+    // Shape angle a maps to world direction (cos(a + phi), -sin(a + phi)) after the rotations below.
+    const alpha = Math.atan2(-cut.z, cut.x) - phi;
+    const faceR = PIECE_RADIUS - 0.035;
+    const half = (r: number, a0: number) => {
+      const shape = new THREE.Shape();
+      shape.moveTo(Math.cos(a0) * r, Math.sin(a0) * r);
+      shape.absarc(0, 0, r, a0, a0 + Math.PI, false);
+      shape.closePath();
+      return shape;
+    };
+    return [0, 1].map((i) => {
+      const a0 = alpha + i * Math.PI;
+      const bodyMesh = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(half(PIECE_RADIUS, a0), { depth: PIECE_HEIGHT - 0.01, bevelEnabled: false, curveSegments: 24 }),
+        obj.materials[0].clone(),
+      );
+      const faceGeo = new THREE.ShapeGeometry(half(faceR, a0), 24);
+      const pos = faceGeo.attributes.position;
+      const uv = faceGeo.attributes.uv;
+      for (let k = 0; k < pos.count; k++) {
+        uv.setXY(k, pos.getX(k) / (2 * faceR) + 0.5, pos.getY(k) / (2 * faceR) + 0.5);
+      }
+      const face = new THREE.Mesh(faceGeo, obj.materials[1].clone());
+      face.position.z = PIECE_HEIGHT + 0.002;
+      bodyMesh.castShadow = true;
+
+      const inner = new THREE.Group();
+      inner.rotation.x = -Math.PI / 2;
+      inner.add(bodyMesh, face);
+      const outer = new THREE.Group();
+      outer.rotation.y = phi;
+      outer.position.copy(obj.group.position);
+      outer.add(inner);
+      this.root.add(outer);
+      return outer;
+    }) as [THREE.Group, THREE.Group];
   }
 
   private async knockAway(victim: PieceObject, from: THREE.Vector3, at: THREE.Vector3) {
@@ -382,22 +492,36 @@ export class BoardView {
     }
   }
 
-  /** The board square under a screen point (in normalized device coordinates). */
-  pick(ndc: THREE.Vector2): Square | null {
+  /**
+   * What lies under a screen point (normalized device coordinates): the first piece body hit,
+   * the board point, and the first portrait card hit. Cards stand behind their pieces and can
+   * cover squares further back, so the caller decides which one the click meant.
+   */
+  pick(ndc: THREE.Vector2): PickResult {
+    // Pieces created since the last frame have no world matrix yet.
+    this.root.updateMatrixWorld();
     this.raycaster.setFromCamera(ndc, this.stage.camera);
     const groups = [...this.pieces.values()].filter((o) => o.group.visible).map((o) => o.group);
-    const hit = this.raycaster.intersectObjects(groups, true)[0];
-    if (hit) {
+    const result: PickResult = { body: null, card: null, board: null };
+    for (const hit of this.raycaster.intersectObjects(groups, true)) {
       let obj: THREE.Object3D | null = hit.object;
-      while (obj && obj.userData.pieceId === undefined) obj = obj.parent;
-      if (obj) {
-        // Use the piece's resting square rather than the exact hit point.
-        const p = obj.position;
-        return worldToSquare(new THREE.Vector3(p.x, 0, p.z));
+      let onCard = false;
+      while (obj && obj.userData.pieceId === undefined) {
+        if (obj.userData.card) onCard = true;
+        obj = obj.parent;
+      }
+      if (!obj) continue;
+      // Use the piece's resting square rather than the exact hit point.
+      const square = worldToSquare(new THREE.Vector3(obj.position.x, 0, obj.position.z));
+      if (onCard) result.card ??= square;
+      else if (result.body === null) {
+        result.body = square;
+        break;
       }
     }
     const boardHit = this.raycaster.intersectObject(this.boardSurface)[0];
-    return boardHit ? worldToSquare(boardHit.point) : null;
+    if (boardHit) result.board = worldToSquare(boardHit.point);
+    return result;
   }
 
   setHover(id: string | null) {

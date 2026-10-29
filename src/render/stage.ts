@@ -2,12 +2,15 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Side } from '../core/types';
 import { BOARD_DEPTH, BOARD_WIDTH, createBackgroundTexture } from './textures';
-import { easeInOutCubic, lerp, tween } from './tween';
+import { clock, easeInOutCubic, lerp, tween } from './tween';
 
 export type ViewMode = '3d' | 'top';
 
 const POLAR_3D = 0.78;
 const POLAR_TOP = 0.0001;
+/** Screen space taken by the HUD, in CSS pixels. */
+const HUD_TOP = 64;
+const HUD_BOTTOM = 92;
 
 /** Renderer, camera, lights and the frame loop. */
 export class Stage {
@@ -53,7 +56,7 @@ export class Stage {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       this.controls.update();
-      for (const fn of this.onFrame) fn(dt);
+      for (const fn of this.onFrame) fn(dt * clock.scale);
       this.render();
     });
   }
@@ -104,11 +107,13 @@ export class Stage {
 
   /** Distance that fits the whole board, plus room for the HUD, at the current aspect ratio. */
   private cameraRadius() {
-    const halfV = THREE.MathUtils.degToRad(this.camera.fov / 2);
-    const halfH = Math.atan(Math.tan(halfV) * this.camera.aspect);
+    // Keep the board clear of the top bar and the bottom toolbar.
+    const usable = Math.max(0.6, (window.innerHeight - HUD_TOP - HUD_BOTTOM) / window.innerHeight);
+    const tanV = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * usable;
+    const tanH = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * this.camera.aspect;
     const halfWidth = BOARD_WIDTH / 2 + 0.4;
-    const halfDepth = BOARD_DEPTH / 2 + (this.viewMode === 'top' ? 1.2 : 0.9);
-    return Math.max(halfDepth / Math.tan(halfV), halfWidth / Math.tan(halfH));
+    const halfDepth = BOARD_DEPTH / 2 + (this.viewMode === 'top' ? 0.6 : 0.3);
+    return Math.max(halfDepth / tanV, halfWidth / tanH);
   }
 
   private resize() {
@@ -116,6 +121,8 @@ export class Stage {
     const h = window.innerHeight;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
+    // Shift the picture so the board is centred between the top bar and the toolbar.
+    this.camera.setViewOffset(w, h, 0, (HUD_BOTTOM - HUD_TOP) / 2, w, h);
     this.camera.updateProjectionMatrix();
     // Keep the viewing angle, but refit the distance to the new shape.
     const s = new THREE.Spherical().setFromVector3(this.camera.position.clone().sub(this.controls.target));
