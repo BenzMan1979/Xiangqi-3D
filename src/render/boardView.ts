@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { HistoryEntry } from '../core/game';
 import { Board, Piece, PieceType, Side, Square, fileOf, rankOf } from '../core/types';
+import { Faction, characterFor } from '../data/factions';
+import { getPortrait } from './portrait';
 import { Stage } from './stage';
 import {
   BOARD_DEPTH,
@@ -15,6 +17,8 @@ const PIECE_RADIUS = 0.43;
 const PIECE_HEIGHT = 0.22;
 const BOARD_THICKNESS = 0.34;
 const LIFT = 0.32;
+const CARD_W = 0.64;
+const CARD_H = 0.9;
 
 /** World position of a board point, on the board surface. */
 export function squareToWorld(s: Square, target = new THREE.Vector3()) {
@@ -35,6 +39,8 @@ interface PieceObject {
   group: THREE.Group;
   /** Materials whose opacity is faded when captured. */
   materials: THREE.MeshStandardMaterial[];
+  /** The portrait standee; turns to face the camera every frame. */
+  card: THREE.Group | null;
 }
 
 /** Owns every mesh on the board and turns game events into animation. */
@@ -50,6 +56,10 @@ export class BoardView {
   private readonly faceTextures = new Map<string, THREE.Texture>();
   private readonly pieceGeometry: THREE.LatheGeometry;
   private readonly faceGeometry = new THREE.CircleGeometry(PIECE_RADIUS - 0.035, 48);
+  private readonly cardGeometry = new THREE.BoxGeometry(CARD_W, CARD_H, 0.025);
+  private readonly portraitTextures = new Map<HTMLCanvasElement, THREE.Texture>();
+  private factions: Record<Side, Faction> | null = null;
+  private showCards = true;
   private selectedId: string | null = null;
   private hoveredId: string | null = null;
   private faceAngle = 0;
@@ -132,6 +142,36 @@ export class BoardView {
     return tex;
   }
 
+  private portraitTexture(canvas: HTMLCanvasElement) {
+    let tex = this.portraitTextures.get(canvas);
+    if (!tex) {
+      tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      this.portraitTextures.set(canvas, tex);
+    }
+    return tex;
+  }
+
+  /** A portrait card standing on the back half of the disc, leaving the piece's character readable. */
+  private createCard(piece: Piece, faction: Faction) {
+    const canvas = getPortrait(characterFor(faction, piece), faction, piece.type, piece.side);
+    const mat = new THREE.MeshStandardMaterial({
+      map: this.portraitTexture(canvas),
+      roughness: 0.55,
+      transparent: true,
+    });
+    // Per-piece edge material so the whole card fades out together when captured.
+    const edge = new THREE.MeshStandardMaterial({ color: 0x2a1a0e, roughness: 0.7, transparent: true });
+    const card = new THREE.Mesh(this.cardGeometry, [edge, edge, edge, edge, mat, mat]);
+    card.castShadow = true;
+    card.position.set(0, PIECE_HEIGHT + CARD_H / 2 + 0.01, -0.2);
+    card.rotation.x = -0.1;
+    const holder = new THREE.Group();
+    holder.add(card);
+    return { holder, mats: [mat, edge] };
+  }
+
   private createPiece(piece: Piece): PieceObject {
     const group = new THREE.Group();
     const bodyMat = new THREE.MeshStandardMaterial({
@@ -162,29 +202,39 @@ export class BoardView {
 
     group.add(body, faceHolder);
     group.userData.pieceId = piece.id;
+    const materials = [bodyMat, faceMat];
+    let card: THREE.Group | null = null;
+    const faction = this.factions?.[piece.side];
+    if (faction) {
+      const made = this.createCard(piece, faction);
+      card = made.holder;
+      materials.push(...made.mats);
+      group.add(card);
+    }
     this.root.add(group);
-    return { piece, group, materials: [bodyMat, faceMat] };
+    return { piece, group, materials, card };
   }
 
-  /** Snaps every piece to match the board (new game, or any non-animated reset). */
-  setBoard(board: Board) {
-    const seen = new Set<string>();
+  private disposePieces() {
+    for (const obj of this.pieces.values()) {
+      this.root.remove(obj.group);
+      obj.materials.forEach((m) => m.dispose());
+    }
+    this.pieces.clear();
+    this.selectedId = null;
+    this.hoveredId = null;
+  }
+
+  /** Rebuilds every piece to match the board and the chosen factions (new game, or any non-animated reset). */
+  setBoard(board: Board, factions: Record<Side, Faction> | null = this.factions) {
+    this.disposePieces();
+    this.factions = factions;
     board.forEach((piece, s) => {
       if (!piece) return;
-      seen.add(piece.id);
-      let obj = this.pieces.get(piece.id);
-      if (!obj) {
-        obj = this.createPiece(piece);
-        this.pieces.set(piece.id, obj);
-      }
-      obj.group.visible = true;
-      obj.group.rotation.set(0, 0, 0);
-      obj.materials.forEach((m) => (m.opacity = 1));
+      const obj = this.createPiece(piece);
+      this.pieces.set(piece.id, obj);
       squareToWorld(s, obj.group.position);
     });
-    for (const [id, obj] of this.pieces) {
-      if (!seen.has(id)) obj.group.visible = false;
-    }
     this.select(null);
     this.setLastMove(null);
     this.setCheck(null);
@@ -360,11 +410,28 @@ export class BoardView {
   private setEmissive(id: string | null, color: number) {
     if (!id) return;
     const obj = this.pieces.get(id);
-    if (obj) (obj.materials[1].emissive as THREE.Color).setHex(color);
+    obj?.materials.slice(1).forEach((m) => m.emissive.setHex(color));
+  }
+
+  setShowCards(show: boolean) {
+    this.showCards = show;
   }
 
   private onFrame(dt: number) {
     this.time += dt;
+
+    // Standees face the camera and fold away as the view approaches straight down.
+    const cam = this.stage.camera.position;
+    const phi = Math.acos(THREE.MathUtils.clamp(cam.y / cam.length(), -1, 1));
+    const fold = this.showCards ? THREE.MathUtils.smoothstep(phi, 0.2, 0.5) : 0;
+    for (const obj of this.pieces.values()) {
+      if (!obj.card) continue;
+      obj.card.visible = fold > 0.01;
+      if (!obj.card.visible) continue;
+      const p = obj.group.position;
+      obj.card.rotation.y = Math.atan2(cam.x - p.x, cam.z - p.z);
+      obj.card.scale.set(1, fold, 1);
+    }
     if (this.checkRing.visible) {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 7);
       (this.checkRing.material as THREE.MeshBasicMaterial).opacity = 0.45 + pulse * 0.5;

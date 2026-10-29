@@ -18,6 +18,7 @@ export interface HudActions {
   flipView(): void;
   toggleViewMode(): void;
   toggleAutoFlip(): boolean;
+  toggleCards(): boolean;
   resign(): void;
 }
 
@@ -38,11 +39,14 @@ export class Hud {
     bind('btn-flip', actions.flipView);
     bind('btn-view', actions.toggleViewMode);
     bind('btn-resign', actions.resign);
-    bind('btn-autoflip', () => {
-      const on = actions.toggleAutoFlip();
-      $('#btn-autoflip').classList.toggle('on', on);
-      $('#btn-autoflip').setAttribute('aria-pressed', String(on));
-    });
+    const toggle = (id: string, fn: () => boolean) =>
+      bind(id, () => {
+        const on = fn();
+        $(`#${id}`).classList.toggle('on', on);
+        $(`#${id}`).setAttribute('aria-pressed', String(on));
+      });
+    toggle('btn-autoflip', actions.toggleAutoFlip);
+    toggle('btn-cards', actions.toggleCards);
     bind('btn-again', () => {
       this.dialog.close();
       actions.newGame();
@@ -51,9 +55,10 @@ export class Hud {
     bind('btn-moves', () => document.body.classList.toggle('moves-open'));
   }
 
-  setTurn(side: Side, inCheck: boolean) {
+  /** `label` names the side to move, e.g. "蜀（紅）". */
+  setTurn(side: Side, inCheck: boolean, label = SIDE_NAMES[side]) {
     this.turn.dataset.side = side;
-    this.turn.querySelector('.label')!.textContent = `${SIDE_NAMES[side]}走棋`;
+    this.turn.querySelector('.label')!.textContent = `${label}走棋`;
     this.turn.classList.toggle('check', inCheck);
   }
 
@@ -89,9 +94,13 @@ export class Hud {
     this.bannerTimer = window.setTimeout(() => (this.banner.className = ''), 1400);
   }
 
-  showResult(status: GameStatus) {
+  setMatchup(text: string) {
+    $('#title p').textContent = text;
+  }
+
+  showResult(status: GameStatus, label: (side: Side) => string = (s) => SIDE_NAMES[s]) {
     if (status.state !== 'over') return;
-    const title = status.winner ? `${SIDE_NAMES[status.winner]}勝` : '和棋';
+    const title = status.winner ? `${label(status.winner)}勝` : '和棋';
     $('#result-title').textContent = title;
     $('#result-title').dataset.side = status.winner ?? 'draw';
     $('#result-reason').textContent = REASON_TEXT[status.reason];

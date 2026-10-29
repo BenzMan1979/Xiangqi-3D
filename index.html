@@ -34,6 +34,7 @@
       <button id="btn-flip">翻轉視角</button>
       <button id="btn-view">俯視</button>
       <button id="btn-autoflip" aria-pressed="false" title="每步後自動轉到走棋方的視角">自動翻轉</button>
+      <button id="btn-cards" class="on" aria-pressed="true" title="顯示或隱藏棋子上的人物立牌">人物立牌</button>
       <button id="btn-moves" class="mobile-only">棋譜</button>
       <button id="btn-resign" class="danger">認輸</button>
     </nav>
@@ -48,6 +49,32 @@
         <button id="btn-review">檢視棋局</button>
       </div>
     </dialog>
+
+    <div id="setup" hidden>
+      <div class="setup-inner">
+        <h2>選擇陣營</h2>
+        <div class="modes" role="group" aria-label="對戰模式">
+          <button class="mode on" aria-pressed="true">單機雙人</button>
+          <button class="mode" disabled>AI 對戰<small>即將推出</small></button>
+          <button class="mode" disabled>連線對戰<small>即將推出</small></button>
+        </div>
+        <div class="sides">
+          <section class="side-pick" data-side="red">
+            <h3><span class="dot"></span>紅方</h3>
+            <div class="faction-grid"></div>
+            <div class="faction-preview"></div>
+          </section>
+          <div class="vs">對</div>
+          <section class="side-pick" data-side="black">
+            <h3><span class="dot"></span>黑方</h3>
+            <div class="faction-grid"></div>
+            <div class="faction-preview"></div>
+          </section>
+        </div>
+        <p class="setup-hint">滑鼠移到人物名字上可查看介紹與絕招（手機請點名字）</p>
+        <button id="btn-start" class="primary">開始對弈</button>
+      </div>
+    </div>
 
     <div id="loading">載入中…</div>
     <script type="module" src="/src/main.ts"></script>
