@@ -70,19 +70,32 @@
       <div class="setup-inner">
         <h2>選擇陣營</h2>
         <div class="modes" role="group" aria-label="對戰模式">
-          <button class="mode on" aria-pressed="true">單機雙人</button>
-          <button class="mode" disabled>AI 對戰<small>即將推出</small></button>
+          <button class="mode" data-mode="local">單機雙人</button>
+          <button class="mode" data-mode="ai">AI 對戰</button>
           <button class="mode" disabled>連線對戰<small>即將推出</small></button>
+        </div>
+        <div id="ai-options" hidden>
+          <fieldset class="opt-group">
+            <legend>電腦難度</legend>
+            <div class="levels" id="level-list"></div>
+          </fieldset>
+          <fieldset class="opt-group">
+            <legend>你執</legend>
+            <div class="levels" id="side-list">
+              <button class="level" data-human="red"><b>紅方</b><small>先手</small></button>
+              <button class="level" data-human="black"><b>黑方</b><small>後手</small></button>
+            </div>
+          </fieldset>
         </div>
         <div class="sides">
           <section class="side-pick" data-side="red">
-            <h3><span class="dot"></span>紅方</h3>
+            <h3><span class="dot"></span>紅方<span class="who"></span></h3>
             <div class="faction-grid"></div>
             <div class="faction-preview"></div>
           </section>
           <div class="vs">對</div>
           <section class="side-pick" data-side="black">
-            <h3><span class="dot"></span>黑方</h3>
+            <h3><span class="dot"></span>黑方<span class="who"></span></h3>
             <div class="faction-grid"></div>
             <div class="faction-preview"></div>
           </section>

@@ -1,25 +1,50 @@
 import { PIECE_NAMES } from '../core/notation';
 import { PieceType, Side } from '../core/types';
+import { AI_LEVELS, AiLevel } from '../ai/levels';
 import { FACTIONS, FACTION_BY_ID, Faction, FactionId } from '../data/factions';
 import { getPortrait, portraitUrl } from '../render/portrait';
 import { CharacterCard } from './characterCard';
 
 export type FactionChoice = Record<Side, FactionId>;
+export type GameMode = 'local' | 'ai';
 
-const STORAGE_KEY = 'xq3d.factions';
+/** Everything chosen on the setup screen. */
+export interface SetupChoice {
+  factions: FactionChoice;
+  mode: GameMode;
+  level: AiLevel;
+  /** The side the person plays in AI mode. */
+  human: Side;
+}
+
+const STORAGE_KEY = 'xq3d.setup';
 const ROLE_ORDER: PieceType[] = ['k', 'a', 'b', 'r', 'n', 'c', 'p'];
 
-export function loadChoice(): FactionChoice {
+const DEFAULT_CHOICE: SetupChoice = {
+  factions: { red: 'han', black: 'chu' },
+  mode: 'local',
+  level: 'intermediate',
+  human: 'red',
+};
+
+export function loadChoice(): SetupChoice {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
-    if (saved && FACTION_BY_ID[saved.red as FactionId] && FACTION_BY_ID[saved.black as FactionId]) return saved;
+    if (saved && FACTION_BY_ID[saved.factions?.red as FactionId] && FACTION_BY_ID[saved.factions?.black as FactionId]) {
+      return {
+        factions: { red: saved.factions.red, black: saved.factions.black },
+        mode: saved.mode === 'ai' ? 'ai' : 'local',
+        level: AI_LEVELS.some((l) => l.id === saved.level) ? saved.level : DEFAULT_CHOICE.level,
+        human: saved.human === 'black' ? 'black' : 'red',
+      };
+    }
   } catch {
     // Storage may be unavailable (private mode); fall back to the default.
   }
-  return { red: 'han', black: 'chu' };
+  return { ...DEFAULT_CHOICE, factions: { ...DEFAULT_CHOICE.factions } };
 }
 
-function saveChoice(choice: FactionChoice) {
+function saveChoice(choice: SetupChoice) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(choice));
   } catch {
@@ -30,8 +55,8 @@ function saveChoice(choice: FactionChoice) {
 /** Pre-game screen where each side picks a faction. */
 export class SetupScreen {
   private readonly root = document.getElementById('setup')!;
-  private choice: FactionChoice = loadChoice();
-  private resolve: ((c: FactionChoice) => void) | null = null;
+  private choice: SetupChoice = loadChoice();
+  private resolve: ((c: SetupChoice) => void) | null = null;
 
   constructor(private readonly card: CharacterCard) {
     for (const side of ['red', 'black'] as Side[]) {
@@ -43,19 +68,78 @@ export class SetupScreen {
         btn.style.setProperty('--faction', f.color);
         btn.innerHTML = `<span class="badge">${f.name}</span><span class="leader">${f.roster.k.name}</span>`;
         btn.addEventListener('click', () => {
-          this.choice[side] = f.id;
+          this.choice.factions[side] = f.id;
           this.renderSide(side);
         });
         grid.append(btn);
       }
     }
+    this.buildModeControls();
     document.getElementById('btn-start')!.addEventListener('click', () => this.finish());
     this.root.addEventListener('pointerdown', (e) => {
       if (!(e.target as HTMLElement).closest('.roster-name')) this.card.hide();
     });
   }
 
-  open(): Promise<FactionChoice> {
+  private buildModeControls() {
+    const levels = document.getElementById('level-list')!;
+    for (const l of AI_LEVELS) {
+      const btn = document.createElement('button');
+      btn.className = 'level';
+      btn.dataset.level = l.id;
+      btn.innerHTML = `<b>${l.name}</b><small>${l.blurb}</small>`;
+      levels.append(btn);
+    }
+    const master = document.createElement('button');
+    master.className = 'level';
+    master.disabled = true;
+    master.innerHTML = '<b>大師</b><small>即將推出</small>';
+    levels.append(master);
+
+    this.root.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.choice.mode = b.dataset.mode as GameMode;
+        this.renderMode();
+      }),
+    );
+    levels.querySelectorAll<HTMLButtonElement>('[data-level]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.choice.level = b.dataset.level as AiLevel;
+        this.renderMode();
+      }),
+    );
+    document.querySelectorAll<HTMLButtonElement>('#side-list [data-human]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.choice.human = b.dataset.human as Side;
+        this.renderMode();
+      }),
+    );
+  }
+
+  private renderMode() {
+    const { mode, level, human } = this.choice;
+    this.root.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach((b) => {
+      const on = b.dataset.mode === mode;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    (document.getElementById('ai-options') as HTMLElement).hidden = mode !== 'ai';
+    document.querySelectorAll<HTMLButtonElement>('#level-list [data-level]').forEach((b) => {
+      b.classList.toggle('on', b.dataset.level === level);
+      b.setAttribute('aria-pressed', String(b.dataset.level === level));
+    });
+    document.querySelectorAll<HTMLButtonElement>('#side-list [data-human]').forEach((b) => {
+      b.classList.toggle('on', b.dataset.human === human);
+      b.setAttribute('aria-pressed', String(b.dataset.human === human));
+    });
+    for (const side of ['red', 'black'] as Side[]) {
+      const tag = mode === 'ai' ? (side === human ? '（你）' : '（電腦）') : '';
+      this.root.querySelector(`[data-side="${side}"] h3 .who`)!.textContent = tag;
+    }
+  }
+
+  open(): Promise<SetupChoice> {
+    this.renderMode();
     this.renderSide('red');
     this.renderSide('black');
     this.root.hidden = false;
@@ -69,13 +153,13 @@ export class SetupScreen {
     this.root.hidden = true;
     document.body.classList.remove('setup-open');
     saveChoice(this.choice);
-    this.resolve?.({ ...this.choice });
+    this.resolve?.({ ...this.choice, factions: { ...this.choice.factions } });
     this.resolve = null;
   }
 
   private renderSide(side: Side) {
     const section = this.root.querySelector(`[data-side="${side}"]`)!;
-    const faction = FACTION_BY_ID[this.choice[side]];
+    const faction = FACTION_BY_ID[this.choice.factions[side]];
     section.querySelectorAll<HTMLButtonElement>('.faction-tile').forEach((b) => {
       const on = b.dataset.faction === faction.id;
       b.classList.toggle('on', on);

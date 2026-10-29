@@ -26,7 +26,11 @@ export class Game {
   /** Position key after each ply; index 0 is the starting position. */
   private positions: string[] = [];
 
+  /** The position this game began from; with `history` it replays the whole game. */
+  readonly startFen: string;
+
   constructor(fen: string = START_FEN) {
+    this.startFen = fen;
     const { board, turn } = parseFen(fen);
     this.board = board;
     this.turn = turn;

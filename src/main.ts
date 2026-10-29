@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { AiPlayer } from './ai/player';
+import { AiLevel, LEVEL_BY_ID } from './ai/levels';
 import { audio } from './audio/audio';
 import { Game } from './core/game';
 import { findKing } from './core/rules';
@@ -11,13 +13,13 @@ import { clock } from './render/tween';
 import { CharacterCard } from './ui/characterCard';
 import { Hud, SIDE_NAMES } from './ui/hud';
 import { Settings, SettingsPanel, loadSettings } from './ui/settings';
-import { FactionChoice, SetupScreen, loadChoice } from './ui/setup';
+import { FactionChoice, GameMode, SetupChoice, SetupScreen, loadChoice } from './ui/setup';
 import './style.css';
 
 const HOVER_DELAY_MS = 300;
 const LONG_PRESS_MS = 450;
 
-/** Local two-player controller: setup → input → rules → animation → HUD. */
+/** Game controller: setup → input → rules → animation → HUD, with an optional computer opponent. */
 class App {
   private game = new Game();
   private factions: Record<Side, Faction>;
@@ -30,6 +32,13 @@ class App {
   private settings: Settings = loadSettings();
   private selected: Square | null = null;
   private busy = false;
+  private mode: GameMode = 'local';
+  private level: AiLevel = 'intermediate';
+  private human: Side = 'red';
+  private readonly ai = new AiPlayer();
+  private thinking = false;
+  /** Identifies the live search, so a result that arrives after undo/new game/resign is ignored. */
+  private aiToken = 0;
 
   constructor() {
     this.stage = new Stage(document.getElementById('stage')!);
@@ -46,7 +55,7 @@ class App {
     this.applySettings(this.settings);
     this.view.onSfx = (name) => audio.play(name);
     this.setup = new SetupScreen(this.card);
-    this.factions = this.resolveFactions(loadChoice());
+    this.factions = this.resolveFactions(loadChoice().factions);
     this.bindPointer();
     this.startGame(this.factions);
     if (new URLSearchParams(location.search).has('debug')) this.exposeDebugHooks();
@@ -101,24 +110,68 @@ class App {
     this.hud.hideResult();
     audio.playMusic('menu');
     const choice = await this.setup.open();
-    this.startGame(this.resolveFactions(choice));
-    audio.playMusic('battle', choice.red);
+    this.startGame(this.resolveFactions(choice.factions), choice);
+    audio.playMusic('battle', choice.factions.red);
   }
 
-  private startGame(factions: Record<Side, Faction>) {
+  /** True when the person at the screen may move now (always, in two-player mode). */
+  private get humanTurn() {
+    return this.mode === 'local' || this.game.turn === this.human;
+  }
+
+  private stopAi() {
+    this.ai.cancel();
+    this.thinking = false;
+    this.aiToken++;
+  }
+
+  private startGame(factions: Record<Side, Faction>, choice?: SetupChoice) {
+    this.stopAi();
     this.factions = factions;
+    if (choice) {
+      this.mode = choice.mode;
+      this.level = choice.level;
+      this.human = choice.human;
+    }
     this.game = new Game();
     this.selected = null;
     this.hud.hideResult();
-    this.hud.setMatchup(`單機雙人 · ${factions.red.fullName} 對 ${factions.black.fullName}`);
+    const names = `${factions.red.fullName} 對 ${factions.black.fullName}`;
+    this.hud.setMatchup(this.mode === 'ai' ? `AI 對戰（${LEVEL_BY_ID[this.level].name}）· ${names}` : `單機雙人 · ${names}`);
     this.view.setBoard(this.game.board, factions);
     this.refresh();
-    if (this.stage.side !== 'red') this.flipView();
+    const facing = this.mode === 'ai' ? this.human : 'red';
+    if (this.stage.side !== facing) void this.turnViewTo(facing);
+    this.maybeAiTurn();
+  }
+
+  /** If it is the computer's turn, searches and plays its move. */
+  private maybeAiTurn() {
+    if (this.mode !== 'ai' || this.game.isOver || this.humanTurn || this.thinking || this.busy) return;
+    void this.aiTurn();
+  }
+
+  private async aiTurn() {
+    const game = this.game;
+    const token = ++this.aiToken;
+    this.thinking = true;
+    this.selected = null;
+    this.view.select(null);
+    this.refresh();
+    const move = await this.ai.think(game, this.level);
+    // Dropped if the game was restarted, undone or resigned while the computer was thinking.
+    if (token !== this.aiToken || game !== this.game || game.isOver) return;
+    this.thinking = false;
+    if (!move) {
+      this.refresh();
+      return;
+    }
+    await this.play(move.from, move.to);
   }
 
   private refresh() {
     const inCheck = !this.game.isOver && this.game.inCheck();
-    this.hud.setTurn(this.game.turn, inCheck, this.label(this.game.turn));
+    this.hud.setTurn(this.game.turn, inCheck, this.label(this.game.turn), this.thinking);
     this.hud.setHistory(this.game.history);
     this.view.setLastMove(this.game.lastMove);
     this.view.setCheck(inCheck ? findKing(this.game.board, this.game.turn) : null);
@@ -148,28 +201,45 @@ class App {
         audio.play('check');
         this.stage.kick(0.1);
       }
-      if (this.settings.autoFlip) await this.turnViewTo(this.game.turn);
+      if (this.settings.autoFlip && this.mode === 'local') await this.turnViewTo(this.game.turn);
     }
     this.busy = false;
+    this.maybeAiTurn();
   }
 
   private async undo() {
     if (this.busy) return;
-    const entry = this.game.undo();
-    if (!entry) return;
+    const game = this.game;
+    // Against the computer, take back to the person's own turn (their move and the reply).
+    const wasThinking = this.thinking;
+    this.stopAi();
+    const entries = [];
+    do {
+      const entry = game.undo();
+      if (!entry) break;
+      entries.push(entry);
+    } while (this.mode === 'ai' && !this.humanTurn);
+    if (entries.length === 0) {
+      if (wasThinking) this.maybeAiTurn();
+      return;
+    }
     this.busy = true;
     this.hud.hideResult();
     this.selected = null;
-    await this.view.animateUndo(entry);
+    this.view.select(null);
+    for (const entry of entries) await this.view.animateUndo(entry);
     this.refresh();
-    if (this.settings.autoFlip) await this.turnViewTo(this.game.turn);
+    if (this.settings.autoFlip && this.mode === 'local') await this.turnViewTo(game.turn);
     this.busy = false;
+    this.maybeAiTurn();
   }
 
   private resign() {
     if (this.busy || this.game.isOver) return;
-    if (!confirm(`${this.label(this.game.turn)}確定要認輸嗎？`)) return;
-    this.game.resign(this.game.turn);
+    const side = this.mode === 'ai' ? this.human : this.game.turn;
+    if (!confirm(`${this.label(side)}確定要認輸嗎？`)) return;
+    this.stopAi();
+    this.game.resign(side);
     this.refresh();
     this.showResult();
   }
@@ -190,7 +260,7 @@ class App {
   }
 
   private onSquareClicked(s: Square | null) {
-    if (this.busy || this.game.isOver) return;
+    if (this.busy || this.game.isOver || !this.humanTurn) return;
     const piece = s === null ? null : this.game.board[s];
 
     if (s !== null && piece?.side === this.game.turn) {
@@ -280,7 +350,7 @@ class App {
 
       const s = this.resolve(this.view.pick(ndc(e)));
       const hit = this.subjectAt(s);
-      const actionable = !this.busy && !this.game.isOver && hit?.piece.side === this.game.turn;
+      const actionable = !this.busy && !this.game.isOver && this.humanTurn && hit?.piece.side === this.game.turn;
       this.view.setHover(actionable ? hit!.piece.id : null);
       const target = this.selected !== null && s !== null && this.game.legalMovesFrom(this.selected).includes(s);
       canvas.style.cursor = actionable || target ? 'pointer' : '';

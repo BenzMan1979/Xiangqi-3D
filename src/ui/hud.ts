@@ -48,9 +48,9 @@ export class Hud {
   }
 
   /** `label` names the side to move, e.g. "蜀（紅）". */
-  setTurn(side: Side, inCheck: boolean, label = SIDE_NAMES[side]) {
+  setTurn(side: Side, inCheck: boolean, label = SIDE_NAMES[side], thinking = false) {
     this.turn.dataset.side = side;
-    this.turn.querySelector('.label')!.textContent = `${label}走棋`;
+    this.turn.querySelector('.label')!.textContent = thinking ? `${label}思考中…` : `${label}走棋`;
     this.turn.classList.toggle('check', inCheck);
   }
 
