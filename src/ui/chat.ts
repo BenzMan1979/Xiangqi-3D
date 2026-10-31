@@ -1,9 +1,7 @@
 import { cleanChat } from '../net/protocol';
+import { PRESET_LINES, addCustom, loadCustom, removeCustom, saveCustom } from '../net/quicklines';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
-
-/** A few lines for people who would rather tap than type. */
-const QUICK_LINES = ['承讓承讓', '這步有點意思', '再想想？', '我的炮可不是擺設', '勝負未定，別急'];
 
 const BUBBLE_MS = 4500;
 const MIN_GAP_MS = 400;
@@ -20,15 +18,35 @@ export class Chat {
   private unread = 0;
   private lastSent = 0;
   private bubbleTimer = 0;
+  private readonly menu = $('#chat-menu');
+  private readonly menuBtn = $<HTMLButtonElement>('#chat-menu-btn');
+  private custom = loadCustom();
 
   constructor(private readonly onSend: (text: string) => void) {
-    for (const line of QUICK_LINES) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = line;
-      btn.addEventListener('click', () => this.send(line));
-      $('#chat-quick').append(btn);
-    }
+    this.renderMenu();
+    this.menuBtn.addEventListener('click', () => this.setMenu(this.menu.hidden));
+    $('#chat-menu-add').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const field = $<HTMLInputElement>('#chat-menu-input');
+      this.custom = addCustom(this.custom, field.value);
+      field.value = '';
+      saveCustom(this.custom);
+      this.renderMenu();
+      // Show the new line, which is added at the end of a possibly long list.
+      const list = $('#chat-menu-list');
+      list.scrollTop = list.scrollHeight;
+    });
+    // Tapping elsewhere or pressing Esc closes the menu.
+    document.addEventListener('pointerdown', (e) => {
+      if (!this.menu.hidden && !(e.target as HTMLElement).closest('#chat-menu, #chat-menu-btn')) this.setMenu(false);
+    });
+    this.panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !this.menu.hidden) {
+        e.stopPropagation();
+        this.setMenu(false);
+        this.menuBtn.focus();
+      }
+    });
     $('#chat-form').addEventListener('submit', (e) => {
       e.preventDefault();
       this.send(this.input.value);
@@ -37,17 +55,61 @@ export class Chat {
     this.head.addEventListener('click', () => this.setExpanded(this.head.getAttribute('aria-expanded') !== 'true'));
   }
 
+  private setMenu(open: boolean) {
+    this.menu.hidden = !open;
+    this.menuBtn.setAttribute('aria-expanded', String(open));
+    this.menuBtn.textContent = open ? '常用語 ▾' : '常用語 ▴';
+  }
+
+  /** Presets first, then the player's own lines, which can be removed. */
+  private renderMenu() {
+    const list = $('#chat-menu-list');
+    list.replaceChildren();
+    const item = (text: string, removable: boolean) => {
+      const li = document.createElement('li');
+      const say = document.createElement('button');
+      say.type = 'button';
+      say.className = 'say';
+      say.textContent = text;
+      say.addEventListener('click', () => {
+        this.send(text);
+        this.setMenu(false);
+      });
+      li.append(say);
+      if (removable) {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'del';
+        del.textContent = '×';
+        del.title = '刪除這句';
+        del.setAttribute('aria-label', `刪除「${text}」`);
+        del.addEventListener('click', () => {
+          this.custom = removeCustom(this.custom, text);
+          saveCustom(this.custom);
+          this.renderMenu();
+        });
+        li.append(del);
+      }
+      list.append(li);
+    };
+    for (const line of PRESET_LINES) item(line, false);
+    for (const line of this.custom) item(line, true);
+  }
+
   /** Shows an empty panel for a new connected game. Starts collapsed on small screens. */
   open() {
+    this.setMenu(false);
     this.log.innerHTML = '';
     this.unread = 0;
     this.renderUnread();
     this.input.disabled = false;
+    this.menuBtn.disabled = false;
     this.panel.hidden = false;
     this.setExpanded(!matchMedia('(max-width: 760px)').matches);
   }
 
   close() {
+    this.setMenu(false);
     this.panel.hidden = true;
     this.log.innerHTML = '';
     document.getElementById('chat-bubble')?.remove();
@@ -56,6 +118,8 @@ export class Chat {
   /** The other player left: keep the log, stop sending. */
   disable() {
     this.input.disabled = true;
+    this.menuBtn.disabled = true;
+    this.setMenu(false);
   }
 
   add(kind: Kind, text: string, name = '') {

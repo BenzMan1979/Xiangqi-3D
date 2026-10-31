@@ -11,6 +11,14 @@ export interface Transport {
 }
 
 const HANDSHAKE_TIMEOUT_MS = 15000;
+const PING_EVERY_MS = 4000;
+/** A visible opponent that has said nothing for this long is gone. */
+export const STALE_MS = 16000;
+
+/** Whether silence from the other side means they left. Background tabs are throttled, so no verdict there. */
+export function isStale(lastSeen: number, now: number, remoteHidden: boolean): boolean {
+  return !remoteHidden && now - lastSeen > STALE_MS;
+}
 
 /**
  * Typed wrapper over a transport. Messages that arrive before a handler is attached (the other
@@ -22,11 +30,19 @@ export class Link {
   private closeHandler: (() => void) | null = null;
   private readonly buffer: Msg[] = [];
   private readonly waiters: ((m: Msg) => boolean)[] = [];
+  private lastSeen = Date.now();
+  private remoteHidden = false;
+  private heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly transport: Transport) {
     transport.onData = (data) => {
       const msg = parseMsg(data);
       if (!msg) return; // ignore anything malformed
+      this.lastSeen = Date.now();
+      if (msg.t === 'ping') {
+        this.remoteHidden = msg.hidden;
+        return;
+      }
       const i = this.waiters.findIndex((w) => w(msg));
       if (i >= 0) {
         this.waiters.splice(i, 1);
@@ -35,10 +51,34 @@ export class Link {
       if (this.handler) this.handler(msg);
       else this.buffer.push(msg);
     };
-    transport.onClose = () => {
-      this.closed = true;
-      this.closeHandler?.();
-    };
+    transport.onClose = () => this.markClosed();
+  }
+
+  private markClosed() {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.heartbeat);
+    this.closeHandler?.();
+  }
+
+  /**
+   * Pings the other side regularly and gives up on them once a visible opponent goes silent. This
+   * catches a tab or connection that died without the channel ever reporting it.
+   */
+  startHeartbeat(isHidden: () => boolean) {
+    const ping = () => this.send({ t: 'ping', hidden: isHidden() });
+    this.lastSeen = Date.now();
+    ping();
+    this.heartbeat = setInterval(() => {
+      if (isStale(this.lastSeen, Date.now(), this.remoteHidden)) {
+        this.transport.close();
+        this.markClosed();
+        return;
+      }
+      ping();
+    }, PING_EVERY_MS);
+    // Tell the other side straight away when this tab goes to or returns from the background.
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', ping);
   }
 
   send(msg: Msg) {
@@ -58,6 +98,7 @@ export class Link {
 
   close() {
     this.closed = true;
+    clearInterval(this.heartbeat);
     this.handler = null;
     this.closeHandler = null;
     this.transport.close();
@@ -89,17 +130,23 @@ export class Link {
   }
 
   /** Host side: waits for the guest's hello, then decides who plays what. */
-  async hostHandshake(mine: { side: Side; faction: FactionId }): Promise<MatchSetup> {
+  async hostHandshake(mine: { side: Side; faction: FactionId; name: string }): Promise<MatchSetup> {
     const hello = await this.expect('hello');
-    this.send({ t: 'start', hostSide: mine.side, hostFaction: mine.faction, guestFaction: hello.faction });
-    return setupFor(mine.side, mine.faction, hello.faction);
+    this.send({
+      t: 'start',
+      hostSide: mine.side,
+      hostFaction: mine.faction,
+      guestFaction: hello.faction,
+      hostName: mine.name,
+    });
+    return setupFor(mine.side, mine.faction, hello.faction, mine.name, hello.name);
   }
 
   /** Guest side: introduces itself and waits for the host's decision. */
-  async guestHandshake(faction: FactionId): Promise<MatchSetup> {
-    this.send({ t: 'hello', faction });
+  async guestHandshake(faction: FactionId, name: string): Promise<MatchSetup> {
+    this.send({ t: 'hello', faction, name });
     const start = await this.expect('start');
-    return setupFor(opponent(start.hostSide), faction, start.hostFaction);
+    return setupFor(opponent(start.hostSide), faction, start.hostFaction, name, start.hostName);
   }
 }
 
@@ -107,8 +154,11 @@ export class Link {
 export interface MatchSetup {
   mySide: Side;
   factions: Record<Side, FactionId>;
+  /** Player names by side; empty when someone gave none. */
+  names: Record<Side, string>;
 }
 
-function setupFor(mySide: Side, myFaction: FactionId, theirFaction: FactionId): MatchSetup {
-  return { mySide, factions: { [mySide]: myFaction, [opponent(mySide)]: theirFaction } as Record<Side, FactionId> };
+function setupFor(mySide: Side, myFaction: FactionId, theirFaction: FactionId, myName: string, theirName: string): MatchSetup {
+  const by = <T>(mine: T, theirs: T) => ({ [mySide]: mine, [opponent(mySide)]: theirs }) as Record<Side, T>;
+  return { mySide, factions: by(myFaction, theirFaction), names: by(myName, theirName) };
 }

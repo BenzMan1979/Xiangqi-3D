@@ -3,8 +3,8 @@ import { FACTION_BY_ID, FactionId } from '../data/factions';
 
 /** Messages exchanged between the two players. Both sides validate everything they receive. */
 export type Msg =
-  | { t: 'hello'; faction: FactionId }
-  | { t: 'start'; hostSide: Side; hostFaction: FactionId; guestFaction: FactionId }
+  | { t: 'hello'; faction: FactionId; name: string }
+  | { t: 'start'; hostSide: Side; hostFaction: FactionId; guestFaction: FactionId; hostName: string }
   | { t: 'move'; from: number; to: number; /** Plies played once this move is on the board. */ n: number }
   | { t: 'resign' }
   | {
@@ -15,7 +15,17 @@ export type Msg =
       n: number;
     }
   | { t: 'undo-reply'; ok: boolean }
-  | { t: 'chat'; text: string };
+  | { t: 'chat'; text: string }
+  /** Heartbeat; `hidden` tells the other side not to expect regular pings from a background tab. */
+  | { t: 'ping'; hidden: boolean };
+
+/** Longest player name; it is shown in chat, the turn indicator and the result. */
+export const NAME_MAX = 12;
+
+/** Same cleaning as chat, for names. Empty means "no name", and the faction is shown instead. */
+export function cleanName(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
+}
 
 /** Longest chat line we send; longer ones that arrive are cut rather than refused. */
 export const CHAT_MAX = 120;
@@ -29,16 +39,24 @@ const isSquare = (v: unknown): v is number => Number.isInteger(v) && (v as numbe
 const isFaction = (v: unknown): v is FactionId => typeof v === 'string' && v in FACTION_BY_ID;
 const isSide = (v: unknown): v is Side => v === 'red' || v === 'black';
 
+const nameOf = (v: unknown) => (typeof v === 'string' ? cleanName(v) : '');
+
 /** Returns the message if `data` is a well-formed one, otherwise null. */
 export function parseMsg(data: unknown): Msg | null {
   if (typeof data !== 'object' || data === null) return null;
   const m = data as Record<string, unknown>;
   switch (m.t) {
     case 'hello':
-      return isFaction(m.faction) ? { t: 'hello', faction: m.faction } : null;
+      return isFaction(m.faction) ? { t: 'hello', faction: m.faction, name: nameOf(m.name) } : null;
     case 'start':
       return isSide(m.hostSide) && isFaction(m.hostFaction) && isFaction(m.guestFaction)
-        ? { t: 'start', hostSide: m.hostSide, hostFaction: m.hostFaction, guestFaction: m.guestFaction }
+        ? {
+            t: 'start',
+            hostSide: m.hostSide,
+            hostFaction: m.hostFaction,
+            guestFaction: m.guestFaction,
+            hostName: nameOf(m.hostName),
+          }
         : null;
     case 'move':
       return isSquare(m.from) && isSquare(m.to) && Number.isInteger(m.n) && (m.n as number) > 0
@@ -52,6 +70,8 @@ export function parseMsg(data: unknown): Msg | null {
         : null;
     case 'undo-reply':
       return typeof m.ok === 'boolean' ? { t: 'undo-reply', ok: m.ok } : null;
+    case 'ping':
+      return { t: 'ping', hidden: m.hidden === true };
     case 'chat': {
       if (typeof m.text !== 'string') return null;
       const text = cleanChat(m.text);

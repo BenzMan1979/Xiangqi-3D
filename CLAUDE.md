@@ -42,3 +42,6 @@ npm run dev
 （收到的每則訊息都先 `parseMsg` 驗證；聊天文字只用 textContent 顯示）；`link.ts` 的 `Link` 負責握手與緩衝，可用記憶體內的
 `Transport` 測試。本機測試時網址加 `?peerserver=127.0.0.1:9000` 指到自己跑的 `peer` 伺服器（`npx peer --port 9000`）。
 走子由雙方各自在本機規則引擎驗證，訊息帶步數 `n` 以偵測不同步；悔棋請求帶 `n`，期間對方走子則作廢。
+玩家名稱與常用語只存在各自瀏覽器的 localStorage（`xq3d.setup`、`xq3d.quicklines`）；名稱與聊天文字在 `protocol.ts` 的 `cleanName`／`cleanChat`
+清理後才顯示，一律用 textContent。`Link.startHeartbeat` 每 4 秒 ping，背景分頁會在 ping 裡標 `hidden`，對方就不因沉默判離線。
+網址加 `?debug` 有 `__net()` 可看連線狀態。

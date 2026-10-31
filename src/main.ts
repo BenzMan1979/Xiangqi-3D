@@ -52,6 +52,8 @@ class App {
   private link: Link | null = null;
   private readonly remoteQueue: Msg[] = [];
   private opponentLeft = false;
+  /** Player names in a connected game; null elsewhere. */
+  private names: Record<Side, string> | null = null;
   /** Plies of an undo this player asked for and is waiting on. */
   private undoRequest: 1 | 2 | null = null;
 
@@ -101,6 +103,7 @@ class App {
         const hit = this.view.pick(new THREE.Vector2((x / canvas.clientWidth) * 2 - 1, -(y / canvas.clientHeight) * 2 + 1));
         return { ...hit, resolved: this.resolve(hit), selected: this.selected, busy: this.busy };
       },
+      __net: () => ({ link: !!this.link, closed: this.link?.closed ?? null, left: this.opponentLeft, queue: this.remoteQueue.length }),
       __cinemaTime: () => (this.cinema.active ? this.cinema.elapsed : -1),
       /** Plays a character's ultimate on its own, e.g. __ult('guan-yu', 'finisher'). */
       __ult: (id: string, kind: 'finisher' | 'triumph' = 'finisher', side: Side = 'red') => {
@@ -147,7 +150,9 @@ class App {
   private label(side: Side) {
     const f = this.factions[side];
     const mirror = this.factions.red.id === this.factions.black.id;
-    return `${mirror ? SIDE_NAMES[side] : ''}${f.name}軍`;
+    const base = `${mirror ? SIDE_NAMES[side] : ''}${f.name}軍`;
+    const name = this.names?.[side];
+    return name ? `${name}（${base}）` : base;
   }
 
   async chooseAndStart() {
@@ -169,7 +174,7 @@ class App {
       if ('link' in result) {
         const { link, setup } = result;
         const factions = this.resolveFactions(setup.factions);
-        this.startGame(factions, { mode: 'online', level: choice.level, human: setup.mySide }, link);
+        this.startGame(factions, { mode: 'online', level: choice.level, human: setup.mySide }, link, setup.names);
         audio.playMusic('battle', setup.factions.red);
         return;
       }
@@ -195,11 +200,11 @@ class App {
         });
         link = new Link(await Promise.race([guest, cancelled]));
         this.lobby.setStatus('朋友已加入，準備開局…');
-        setup = await Promise.race([link.hostHandshake({ side, faction: ownFaction(choice) }), cancelled]);
+        setup = await Promise.race([link.hostHandshake({ side, faction: ownFaction(choice), name: choice.name }), cancelled]);
       } else {
         link = new Link(await Promise.race([joinRoom(choice.code), cancelled]));
         this.lobby.setStatus('已連上，準備開局…');
-        setup = await Promise.race([link.guestHandshake(ownFaction(choice)), cancelled]);
+        setup = await Promise.race([link.guestHandshake(ownFaction(choice), choice.name), cancelled]);
       }
       this.lobby.hide();
       return { link, setup };
@@ -237,9 +242,11 @@ class App {
     factions: Record<Side, Faction>,
     choice?: { mode: GameMode; level: AiLevel; human: Side },
     link?: Link,
+    players?: Record<Side, string>,
   ) {
     this.stopAi();
     this.closeLink();
+    this.names = players ?? null;
     this.factions = factions;
     if (choice) {
       this.mode = choice.mode;
@@ -249,7 +256,8 @@ class App {
     this.game = new Game();
     this.selected = null;
     this.hud.hideResult();
-    const names = `${factions.red.fullName} 對 ${factions.black.fullName}`;
+    const who = (side: Side) => (this.names?.[side] ? `${factions[side].fullName}・${this.names[side]}` : factions[side].fullName);
+    const names = `${who('red')} 對 ${who('black')}`;
     const title = { local: '單機雙人', ai: `AI 對戰（${LEVEL_BY_ID[this.level].name}）`, online: '連線對戰' }[this.mode];
     this.hud.setMatchup(`${title} · ${names}`);
     if (link) this.attachLink(link);
@@ -415,6 +423,7 @@ class App {
 
   private attachLink(link: Link) {
     this.link = link;
+    link.startHeartbeat(() => document.hidden);
     this.chat.open();
     this.chat.add('system', `已連線：${this.label('red')} 對 ${this.label('black')}，旗開得勝！`);
     link.onMessage((msg) => this.onRemote(msg));
@@ -434,7 +443,8 @@ class App {
   private onRemote(msg: Msg) {
     if (msg.t === 'chat') {
       // Talk is not game state, so it never waits for the board.
-      this.chat.add('them', msg.text, this.label(opponent(this.human)));
+      const them = opponent(this.human);
+      this.chat.add('them', msg.text, this.names?.[them] || this.label(them));
       return;
     }
     this.remoteQueue.push(msg);

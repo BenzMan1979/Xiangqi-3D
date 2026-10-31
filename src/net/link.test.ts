@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { Link, Transport } from './link';
-import { CHAT_MAX, Msg, cleanChat, inviteLink, makeRoomCode, normalizeCode, parseMsg, peerIdFor } from './protocol';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Link, STALE_MS, Transport, isStale } from './link';
+import { CHAT_MAX, Msg, NAME_MAX, cleanChat, cleanName, inviteLink, makeRoomCode, normalizeCode, parseMsg, peerIdFor } from './protocol';
 
 /** Two in-memory transports wired back to back; delivery is asynchronous like a real channel. */
 function pair(): [Transport, Transport] {
@@ -19,8 +19,8 @@ function pair(): [Transport, Transport] {
 describe('protocol', () => {
   it('accepts well-formed messages and rejects malformed ones', () => {
     const ok: Msg[] = [
-      { t: 'hello', faction: 'shu' },
-      { t: 'start', hostSide: 'red', hostFaction: 'han', guestFaction: 'chu' },
+      { t: 'hello', faction: 'shu', name: '關二哥' },
+      { t: 'start', hostSide: 'red', hostFaction: 'han', guestFaction: 'chu', hostName: '劉三' },
       { t: 'move', from: 0, to: 89, n: 3 },
       { t: 'resign' },
       { t: 'undo-request', plies: 2, n: 5 },
@@ -57,6 +57,13 @@ describe('protocol', () => {
     expect(parseMsg({ t: 'chat', text: '<img src=x onerror=alert(1)>' })).toEqual({ t: 'chat', text: '<img src=x onerror=alert(1)>' });
   });
 
+  it('cleans names and treats a missing one as empty', () => {
+    expect(cleanName('  小\n明  ')).toBe('小 明');
+    expect(cleanName('一二三四五六七八九十十一十二十三')).toHaveLength(NAME_MAX);
+    expect(parseMsg({ t: 'hello', faction: 'han' })).toEqual({ t: 'hello', faction: 'han', name: '' });
+    expect(parseMsg({ t: 'hello', faction: 'han', name: 7 })).toEqual({ t: 'hello', faction: 'han', name: '' });
+  });
+
   it('makes and normalizes room codes', () => {
     const code = makeRoomCode(() => 0.5);
     expect(code).toHaveLength(5);
@@ -80,18 +87,26 @@ describe('handshake', () => {
     const host = new Link(h);
     const guest = new Link(g);
     const [hostSetup, guestSetup] = await Promise.all([
-      host.hostHandshake({ side: 'black', faction: 'wei' }),
-      guest.guestHandshake('wu'),
+      host.hostHandshake({ side: 'black', faction: 'wei', name: '曹阿瞞' }),
+      guest.guestHandshake('wu', '孫仲謀'),
     ]);
-    expect(hostSetup).toEqual({ mySide: 'black', factions: { black: 'wei', red: 'wu' } });
-    expect(guestSetup).toEqual({ mySide: 'red', factions: { red: 'wu', black: 'wei' } });
+    expect(hostSetup).toEqual({
+      mySide: 'black',
+      factions: { black: 'wei', red: 'wu' },
+      names: { black: '曹阿瞞', red: '孫仲謀' },
+    });
+    expect(guestSetup).toEqual({
+      mySide: 'red',
+      factions: { red: 'wu', black: 'wei' },
+      names: { red: '孫仲謀', black: '曹阿瞞' },
+    });
   });
 
   it('keeps messages that arrive before the game attaches its handler', async () => {
     const [h, g] = pair();
     const host = new Link(h);
     const guest = new Link(g);
-    await Promise.all([host.hostHandshake({ side: 'red', faction: 'han' }), guest.guestHandshake('chu')]);
+    await Promise.all([host.hostHandshake({ side: 'red', faction: 'han', name: '' }), guest.guestHandshake('chu', '')]);
     guest.send({ t: 'move', from: 10, to: 19, n: 1 });
     await new Promise((r) => setTimeout(r, 5));
     const seen: Msg[] = [];
@@ -102,7 +117,7 @@ describe('handshake', () => {
   it('fails the handshake when the other side disconnects', async () => {
     const [h, g] = pair();
     const host = new Link(h);
-    const pending = host.hostHandshake({ side: 'red', faction: 'han' });
+    const pending = host.hostHandshake({ side: 'red', faction: 'han', name: '' });
     g.close();
     await expect(pending).rejects.toThrow('離線');
   });
@@ -110,10 +125,58 @@ describe('handshake', () => {
   it('ignores garbage on the channel', async () => {
     const [h, g] = pair();
     const host = new Link(h);
-    const pending = host.hostHandshake({ side: 'red', faction: 'han' });
+    const pending = host.hostHandshake({ side: 'red', faction: 'han', name: '' });
     g.send({ t: 'move', from: 'x' });
     g.send('hello');
-    g.send({ t: 'hello', faction: 'tang' });
-    await expect(pending).resolves.toEqual({ mySide: 'red', factions: { red: 'han', black: 'tang' } });
+    g.send({ t: 'hello', faction: 'tang', name: '  李\n世民  ' });
+    await expect(pending).resolves.toEqual({
+      mySide: 'red',
+      factions: { red: 'han', black: 'tang' },
+      names: { red: '', black: '李 世民' },
+    });
+  });
+});
+
+describe('heartbeat', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('judges silence only for a visible opponent', () => {
+    expect(isStale(0, STALE_MS, false)).toBe(false);
+    expect(isStale(0, STALE_MS + 1, false)).toBe(true);
+    expect(isStale(0, STALE_MS * 10, true)).toBe(false);
+  });
+
+  it('gives up on a silent opponent and keeps one that answers', () => {
+    vi.useFakeTimers();
+    const [a, b] = pair();
+    const quiet = new Link(a);
+    const alive = new Link(b);
+    let quietClosed = false;
+    quiet.onClose(() => (quietClosed = true));
+    // Only `quiet` pings; `alive` never answers, so `quiet` must eventually give up.
+    quiet.startHeartbeat(() => false);
+    vi.advanceTimersByTime(STALE_MS - 2000);
+    expect(quietClosed).toBe(false);
+    vi.advanceTimersByTime(8000);
+    expect(quietClosed).toBe(true);
+    expect(alive).toBeDefined();
+  });
+
+  it('is kept alive by pings and does not hand them to the game', async () => {
+    vi.useFakeTimers();
+    const [a, b] = pair();
+    const one = new Link(a);
+    const two = new Link(b);
+    const seen: unknown[] = [];
+    two.onMessage((m) => seen.push(m));
+    let closed = false;
+    one.onClose(() => (closed = true));
+    one.startHeartbeat(() => false);
+    two.startHeartbeat(() => false);
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(4000);
+    expect(closed).toBe(false);
+    expect(seen).toEqual([]);
+    one.close();
+    two.close();
   });
 });

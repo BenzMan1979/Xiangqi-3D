@@ -50,9 +50,16 @@
       </button>
       <div id="chat-body">
         <ol id="chat-log" aria-live="polite"></ol>
-        <div id="chat-quick"></div>
+        <div id="chat-menu" hidden>
+          <ul id="chat-menu-list"></ul>
+          <form id="chat-menu-add" autocomplete="off">
+            <input id="chat-menu-input" type="text" maxlength="40" placeholder="新增常用語…" enterkeyhint="done" />
+            <button type="submit">加入</button>
+          </form>
+        </div>
         <form id="chat-form" autocomplete="off">
           <input id="chat-input" type="text" maxlength="120" placeholder="說點什麼…" enterkeyhint="send" />
+          <button type="button" id="chat-menu-btn" aria-haspopup="true" aria-expanded="false" title="常用語">常用語 ▴</button>
           <button type="submit" class="primary">送出</button>
         </form>
       </div>
@@ -102,9 +109,13 @@
               <button class="level" data-role="guest"><b>加入房間</b><small>輸入朋友給你的房號</small></button>
             </div>
           </fieldset>
+          <fieldset class="opt-group">
+            <legend>你的名稱</legend>
+            <input id="player-name" class="text-field" type="text" maxlength="12" autocomplete="nickname" spellcheck="false" placeholder="選填，例如：楚河霸王" />
+          </fieldset>
           <fieldset class="opt-group" id="join-group" hidden>
             <legend>房號</legend>
-            <input id="join-code" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="例如 K7Q2M" />
+            <input id="join-code" class="text-field" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="輸入房號" />
           </fieldset>
         </div>
         <div id="ai-options" hidden>

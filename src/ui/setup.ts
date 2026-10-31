@@ -2,7 +2,7 @@ import { PIECE_NAMES } from '../core/notation';
 import { PieceType, Side } from '../core/types';
 import { AI_LEVELS, AiLevel } from '../ai/levels';
 import { MasterStatus, checkMaster } from '../ai/uci';
-import { normalizeCode } from '../net/protocol';
+import { cleanName, normalizeCode } from '../net/protocol';
 import { FACTIONS, FACTION_BY_ID, Faction, FactionId } from '../data/factions';
 import { getPortrait, portraitUrl } from '../render/portrait';
 import { CharacterCard } from './characterCard';
@@ -21,6 +21,8 @@ export interface SetupChoice {
   /** Connected games: whether this player opens the room or joins one, and the code to join. */
   role: OnlineRole;
   code: string;
+  /** Shown to the opponent and in chat; empty means none. */
+  name: string;
 }
 
 const STORAGE_KEY = 'xq3d.setup';
@@ -33,6 +35,7 @@ const DEFAULT_CHOICE: SetupChoice = {
   human: 'red',
   role: 'host',
   code: '',
+  name: '',
 };
 
 export function loadChoice(): SetupChoice {
@@ -46,6 +49,7 @@ export function loadChoice(): SetupChoice {
         human: saved.human === 'black' ? 'black' : 'red',
         role: saved.role === 'guest' ? 'guest' : 'host',
         code: '',
+        name: typeof saved.name === 'string' ? cleanName(saved.name) : '',
       };
     }
   } catch {
@@ -142,6 +146,11 @@ export class SetupScreen {
         this.renderMode();
       }),
     );
+    const nameInput = document.getElementById('player-name') as HTMLInputElement;
+    nameInput.addEventListener('input', () => (this.choice.name = nameInput.value));
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && this.canStart()) this.finish();
+    });
     const input = document.getElementById('join-code') as HTMLInputElement;
     input.addEventListener('input', () => {
       this.choice.code = input.value;
@@ -195,6 +204,8 @@ export class SetupScreen {
     });
     const input = document.getElementById('join-code') as HTMLInputElement;
     if (document.activeElement !== input) input.value = this.choice.code;
+    const nameInput = document.getElementById('player-name') as HTMLInputElement;
+    if (document.activeElement !== nameInput) nameInput.value = this.choice.name;
     const start = document.getElementById('btn-start') as HTMLButtonElement;
     start.textContent = mode === 'online' ? (role === 'host' ? '建立房間' : '加入房間') : '開始對弈';
     start.disabled = !this.canStart();
@@ -238,9 +249,10 @@ export class SetupScreen {
     this.card.hide();
     this.root.hidden = true;
     document.body.classList.remove('setup-open');
-    saveChoice({ ...this.choice, code: '' });
+    const name = cleanName(this.choice.name);
+    saveChoice({ ...this.choice, code: '', name });
     const code = normalizeCode(this.choice.code) ?? '';
-    this.resolve?.({ ...this.choice, code, factions: { ...this.choice.factions } });
+    this.resolve?.({ ...this.choice, code, name, factions: { ...this.choice.factions } });
     this.resolve = null;
   }
 
