@@ -7,6 +7,11 @@ import { findKing } from './core/rules';
 import { PieceType, Side, Square, opponent } from './core/types';
 import { FACTIONS, FACTION_BY_ID, Faction, characterFor } from './data/factions';
 import { Cinematic } from './fx/cinematic';
+import { Link, MatchSetup } from './net/link';
+import { Room, hostRoom, joinRoom } from './net/peer';
+import { Msg, inviteLink } from './net/protocol';
+import { Chat } from './ui/chat';
+import { Lobby } from './ui/lobby';
 import { BoardView, PickResult, squareToWorld } from './render/boardView';
 import { Stage } from './render/stage';
 import { PIECE_FONT } from './render/textures';
@@ -14,7 +19,7 @@ import { clock } from './render/tween';
 import { CharacterCard } from './ui/characterCard';
 import { Hud, SIDE_NAMES } from './ui/hud';
 import { Settings, SettingsPanel, loadSettings } from './ui/settings';
-import { FactionChoice, GameMode, SetupChoice, SetupScreen, loadChoice } from './ui/setup';
+import { FactionChoice, GameMode, SetupChoice, SetupScreen, loadChoice, ownFaction } from './ui/setup';
 import './style.css';
 
 const HOVER_DELAY_MS = 300;
@@ -41,6 +46,14 @@ class App {
   private thinking = false;
   /** Identifies the live search, so a result that arrives after undo/new game/resign is ignored. */
   private aiToken = 0;
+  private readonly chat = new Chat((text) => this.sendChat(text));
+  private readonly lobby = new Lobby((code) => inviteLink(code, location.href));
+  /** Connected games: the channel to the other player, and what arrived while the board was busy. */
+  private link: Link | null = null;
+  private readonly remoteQueue: Msg[] = [];
+  private opponentLeft = false;
+  /** Plies of an undo this player asked for and is waiting on. */
+  private undoRequest: 1 | 2 | null = null;
 
   constructor() {
     this.stage = new Stage(document.getElementById('stage')!);
@@ -67,6 +80,8 @@ class App {
     this.setup = new SetupScreen(this.card);
     this.factions = this.resolveFactions(loadChoice().factions);
     this.bindPointer();
+    // Closing the tab should tell the opponent at once instead of leaving them to time out.
+    window.addEventListener('pagehide', () => this.link?.close());
     this.startGame(this.factions);
     if (new URLSearchParams(location.search).has('debug')) this.exposeDebugHooks();
   }
@@ -137,18 +152,78 @@ class App {
 
   async chooseAndStart() {
     if (this.busy) return;
+    if (this.link && !this.opponentLeft && !this.game.isOver && !confirm('要離開這場連線對戰嗎？對手會看到你已離線。')) return;
     this.card.hide();
     this.cinema.dismiss();
     this.hud.hideResult();
     audio.playMusic('menu');
-    const choice = await this.setup.open();
-    this.startGame(this.resolveFactions(choice.factions), choice);
-    audio.playMusic('battle', choice.factions.red);
+    let error: string | undefined;
+    for (;;) {
+      const choice = await this.setup.open(error);
+      if (choice.mode !== 'online') {
+        this.startGame(this.resolveFactions(choice.factions), choice);
+        audio.playMusic('battle', choice.factions.red);
+        return;
+      }
+      const result = await this.connectOnline(choice);
+      if ('link' in result) {
+        const { link, setup } = result;
+        const factions = this.resolveFactions(setup.factions);
+        this.startGame(factions, { mode: 'online', level: choice.level, human: setup.mySide }, link);
+        audio.playMusic('battle', setup.factions.red);
+        return;
+      }
+      error = result.error;
+    }
+  }
+
+  /** Opens or joins a room and agrees the match with the other player; shows the waiting room meanwhile. */
+  private async connectOnline(choice: SetupChoice): Promise<{ link: Link; setup: MatchSetup } | { error?: string }> {
+    let cancel!: () => void;
+    const cancelled = new Promise<never>((_, reject) => (cancel = () => reject(new Error(''))));
+    cancelled.catch(() => {});
+    let room: Promise<Room> | null = null;
+    let link: Link | null = null;
+    this.lobby.show(choice.role, cancel);
+    try {
+      let setup: MatchSetup;
+      if (choice.role === 'host') {
+        const side = choice.human;
+        const guest = new Promise<import('./net/link').Transport>((resolve, reject) => {
+          room = hostRoom(resolve);
+          room.then((r) => this.lobby.setCode(r.code), reject);
+        });
+        link = new Link(await Promise.race([guest, cancelled]));
+        this.lobby.setStatus('朋友已加入，準備開局…');
+        setup = await Promise.race([link.hostHandshake({ side, faction: ownFaction(choice) }), cancelled]);
+      } else {
+        link = new Link(await Promise.race([joinRoom(choice.code), cancelled]));
+        this.lobby.setStatus('已連上，準備開局…');
+        setup = await Promise.race([link.guestHandshake(ownFaction(choice)), cancelled]);
+      }
+      this.lobby.hide();
+      return { link, setup };
+    } catch (err) {
+      this.lobby.hide();
+      link?.close();
+      void (room as Promise<Room> | null)?.then((r) => r.close(), () => {});
+      const message = err instanceof Error ? err.message : '';
+      return { error: message || undefined };
+    }
   }
 
   /** True when the person at the screen may move now (always, in two-player mode). */
   private get humanTurn() {
-    return this.mode === 'local' || this.game.turn === this.human;
+    return this.mode === 'local' || (this.game.turn === this.human && !this.opponentLeft && this.undoRequest === null);
+  }
+
+  private closeLink() {
+    this.chat.close();
+    this.link?.close();
+    this.link = null;
+    this.remoteQueue.length = 0;
+    this.undoRequest = null;
+    this.opponentLeft = false;
   }
 
   private stopAi() {
@@ -158,8 +233,13 @@ class App {
     this.aiToken++;
   }
 
-  private startGame(factions: Record<Side, Faction>, choice?: SetupChoice) {
+  private startGame(
+    factions: Record<Side, Faction>,
+    choice?: { mode: GameMode; level: AiLevel; human: Side },
+    link?: Link,
+  ) {
     this.stopAi();
+    this.closeLink();
     this.factions = factions;
     if (choice) {
       this.mode = choice.mode;
@@ -170,11 +250,13 @@ class App {
     this.selected = null;
     this.hud.hideResult();
     const names = `${factions.red.fullName} 對 ${factions.black.fullName}`;
-    this.hud.setMatchup(this.mode === 'ai' ? `AI 對戰（${LEVEL_BY_ID[this.level].name}）· ${names}` : `單機雙人 · ${names}`);
+    const title = { local: '單機雙人', ai: `AI 對戰（${LEVEL_BY_ID[this.level].name}）`, online: '連線對戰' }[this.mode];
+    this.hud.setMatchup(`${title} · ${names}`);
+    if (link) this.attachLink(link);
     this.view.setBoard(this.game.board, factions);
     this.refresh();
     if (this.mode === 'ai' && this.level === 'master') this.ai.warmUp();
-    const facing = this.mode === 'ai' ? this.human : 'red';
+    const facing = this.mode === 'local' ? 'red' : this.human;
     if (this.stage.side !== facing) void this.turnViewTo(facing);
     this.maybeAiTurn();
   }
@@ -256,6 +338,10 @@ class App {
   private async play(from: Square, to: Square) {
     const entry = this.game.move(from, to);
     if (!entry) return;
+    // Our own move goes to the opponent straight away; the animation can run while they think.
+    if (this.link && entry.piece.side === this.human) {
+      this.link.send({ t: 'move', from, to, n: this.game.history.length });
+    }
     this.busy = true;
     this.selected = null;
     this.card.hide();
@@ -273,10 +359,12 @@ class App {
     }
     this.busy = false;
     this.maybeAiTurn();
+    this.pumpRemote();
   }
 
   private async undo() {
     if (this.busy) return;
+    if (this.mode === 'online') return this.requestUndo();
     const game = this.game;
     // Against the computer, take back to the person's own turn (their move and the reply).
     const wasThinking = this.thinking;
@@ -303,14 +391,155 @@ class App {
   }
 
   private resign() {
-    if (this.busy || this.game.isOver) return;
-    const side = this.mode === 'ai' ? this.human : this.game.turn;
+    if (this.busy || this.game.isOver || this.opponentLeft) return;
+    const side = this.mode === 'local' ? this.game.turn : this.human;
     if (!confirm(`${this.label(side)}確定要認輸嗎？`)) return;
     this.stopAi();
+    this.link?.send({ t: 'resign' });
     this.game.resign(side);
     this.refresh();
     this.busy = true;
-    void this.finale().finally(() => (this.busy = false));
+    void this.finale().finally(() => {
+      this.busy = false;
+      this.pumpRemote();
+    });
+  }
+
+  // ----- Connected games ---------------------------------------------------------------------
+
+  private sendChat(text: string) {
+    if (!this.link || this.opponentLeft) return;
+    this.link.send({ t: 'chat', text });
+    this.chat.add('me', text, '你');
+  }
+
+  private attachLink(link: Link) {
+    this.link = link;
+    this.chat.open();
+    this.chat.add('system', `已連線：${this.label('red')} 對 ${this.label('black')}，旗開得勝！`);
+    link.onMessage((msg) => this.onRemote(msg));
+    link.onClose(() => {
+      if (this.link !== link) return;
+      this.opponentLeft = true;
+      this.undoRequest = null;
+      this.selected = null;
+      this.view.select(null);
+      if (!this.game.isOver) this.hud.flash('對手已離線', 'info');
+      this.hud.setMatchup(`${this.hud.matchup} · 對手已離線`);
+      this.chat.add('system', '對手已離線');
+      this.chat.disable();
+    });
+  }
+
+  private onRemote(msg: Msg) {
+    if (msg.t === 'chat') {
+      // Talk is not game state, so it never waits for the board.
+      this.chat.add('them', msg.text, this.label(opponent(this.human)));
+      return;
+    }
+    this.remoteQueue.push(msg);
+    this.pumpRemote();
+  }
+
+  /** Handles the opponent's moves and requests one at a time, once the board is idle. */
+  private pumpRemote() {
+    while (!this.busy && this.link && this.remoteQueue.length) {
+      const msg = this.remoteQueue.shift()!;
+      const game = this.game;
+      switch (msg.t) {
+        case 'move': {
+          const legal =
+            !game.isOver &&
+            game.turn === opponent(this.human) &&
+            msg.n === game.history.length + 1 &&
+            game.legalMovesFrom(msg.from).includes(msg.to);
+          if (!legal) {
+            // The two boards have diverged; carrying on would only make it worse.
+            this.hud.flash('對局不同步，連線已中止', 'info');
+            this.chat.add('system', '對局不同步，連線已中止');
+            this.chat.disable();
+            this.closeLinkKeepGame();
+            return;
+          }
+          void this.play(msg.from, msg.to);
+          return;
+        }
+        case 'resign':
+          if (game.isOver) break;
+          this.stopAi();
+          this.chat.add('system', '對手認輸了');
+          game.resign(opponent(this.human));
+          this.refresh();
+          this.busy = true;
+          void this.finale().finally(() => {
+            this.busy = false;
+            this.pumpRemote();
+          });
+          return;
+        case 'undo-reply': {
+          const plies = this.undoRequest;
+          this.undoRequest = null;
+          if (msg.ok && plies) {
+            void this.undoPlies(plies);
+            return;
+          }
+          this.hud.flash('對手沒有同意悔棋', 'info');
+          break;
+        }
+        case 'undo-request': {
+          const ok =
+            !game.isOver &&
+            this.undoRequest === null &&
+            game.history.length === msg.n &&
+            confirm(`對手想悔棋（收回 ${msg.plies} 步），同意嗎？`);
+          this.link.send({ t: 'undo-reply', ok });
+          if (ok) {
+            void this.undoPlies(msg.plies);
+            return;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /** Keeps the position on screen but drops the connection (after a desync). */
+  private closeLinkKeepGame() {
+    this.opponentLeft = true;
+    this.link?.close();
+    this.remoteQueue.length = 0;
+  }
+
+  private requestUndo() {
+    if (!this.link || this.opponentLeft || this.game.isOver || this.undoRequest !== null) return;
+    // Take back my last move; if it is already my turn that includes the opponent's reply.
+    const plies = this.game.turn === this.human ? 2 : 1;
+    if (this.game.history.length < plies) {
+      this.hud.flash('還不能悔棋', 'info');
+      return;
+    }
+    this.undoRequest = plies;
+    this.link.send({ t: 'undo-request', plies, n: this.game.history.length });
+    this.hud.flash('已請求悔棋，等待對手回應…', 'info');
+  }
+
+  /** Takes back `plies` moves on both boards after both players agreed. */
+  private async undoPlies(plies: number) {
+    const entries = [];
+    for (let i = 0; i < plies; i++) {
+      const entry = this.game.undo();
+      if (!entry) break;
+      entries.push(entry);
+    }
+    if (entries.length === 0) return;
+    this.busy = true;
+    this.hud.hideResult();
+    this.selected = null;
+    this.view.select(null);
+    for (const entry of entries) await this.view.animateUndo(entry);
+    this.refresh();
+    this.busy = false;
+    this.pumpRemote();
   }
 
   private flipView() {

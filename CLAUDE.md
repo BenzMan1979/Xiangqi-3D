@@ -29,8 +29,8 @@ npm run dev
 ## 來歷與下一步
 
 專案原本在 `BenzMan1979/MyFiles` 的 `xiangqi-3d/` 資料夾開發，已連同提交歷史搬到此 repo。
-目前完成 P0～P4（規則引擎、陣營與人物、吃子特效與音樂、AI 四個難度、終局兩段絕招演出）。
-下一步：熱門人物專屬演出、P5 連線雙人；有機會再把大師級換成 Pikafish 並加上 NNUE 權重。
+目前完成 P0～P5（規則引擎、陣營與人物、吃子特效與音樂、AI 四個難度、終局兩段絕招演出、連線對戰與聊天）。
+下一步：P6 打磨、熱門人物專屬演出；有機會再把大師級換成 Pikafish 並加上 NNUE 權重。
 大師級用 Fairy-Stockfish（`fairy-stockfish-nnue.wasm` npm 套件，GPL-3.0），因為這個開發環境取不到 Pikafish 的 WASM 與權重
 （權重授權另限「非商業」）。它要 SharedArrayBuffer：`vite.config.ts` 的 COOP/COEP 標頭供開發與預覽，部署到 Pages 靠
 `coi-serviceworker`（`index.html` 載入）。`src/ai/fairy.integration.test.ts` 用它當第二個裁判，驗證我們的走法規則。
@@ -38,3 +38,7 @@ npm run dev
 終局演出：人物與模板的對應在 `src/data/ultimates.ts`（新增人物要補一筆，測試會檢查），畫面模板在 `src/fx/ultTemplates.ts`
 （純函式、依進度 t 繪製）。網址加 `?debug` 可用 `__ult('guan-yu', 'finisher')` 單獨預覽；`?slow=3` 放慢演出。
 `src/ai/` 同樣是純邏輯並有測試（含 perft 與規則引擎交叉比對）；改動走子或將軍判斷時兩邊都要跑測試。
+連線對戰（`src/net/`）：PeerJS 點對點，房號 5 碼、peer id 為 `xq3d-房號`；預設用 PeerJS 公用信令服務。協定在 `protocol.ts`
+（收到的每則訊息都先 `parseMsg` 驗證；聊天文字只用 textContent 顯示）；`link.ts` 的 `Link` 負責握手與緩衝，可用記憶體內的
+`Transport` 測試。本機測試時網址加 `?peerserver=127.0.0.1:9000` 指到自己跑的 `peer` 伺服器（`npx peer --port 9000`）。
+走子由雙方各自在本機規則引擎驗證，訊息帶步數 `n` 以偵測不同步；悔棋請求帶 `n`，期間對方走子則作廢。

@@ -86,6 +86,10 @@ export class Hud {
     this.bannerTimer = window.setTimeout(() => (this.banner.className = ''), 1400);
   }
 
+  get matchup() {
+    return $('#title p').textContent ?? '';
+  }
+
   setMatchup(text: string) {
     $('#title p').textContent = text;
   }

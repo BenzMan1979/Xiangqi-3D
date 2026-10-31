@@ -2,20 +2,25 @@ import { PIECE_NAMES } from '../core/notation';
 import { PieceType, Side } from '../core/types';
 import { AI_LEVELS, AiLevel } from '../ai/levels';
 import { MasterStatus, checkMaster } from '../ai/uci';
+import { normalizeCode } from '../net/protocol';
 import { FACTIONS, FACTION_BY_ID, Faction, FactionId } from '../data/factions';
 import { getPortrait, portraitUrl } from '../render/portrait';
 import { CharacterCard } from './characterCard';
 
 export type FactionChoice = Record<Side, FactionId>;
-export type GameMode = 'local' | 'ai';
+export type GameMode = 'local' | 'ai' | 'online';
+export type OnlineRole = 'host' | 'guest';
 
 /** Everything chosen on the setup screen. */
 export interface SetupChoice {
   factions: FactionChoice;
   mode: GameMode;
   level: AiLevel;
-  /** The side the person plays in AI mode. */
+  /** The side the person plays in AI mode, or the host's side in a connected game. */
   human: Side;
+  /** Connected games: whether this player opens the room or joins one, and the code to join. */
+  role: OnlineRole;
+  code: string;
 }
 
 const STORAGE_KEY = 'xq3d.setup';
@@ -26,6 +31,8 @@ const DEFAULT_CHOICE: SetupChoice = {
   mode: 'local',
   level: 'intermediate',
   human: 'red',
+  role: 'host',
+  code: '',
 };
 
 export function loadChoice(): SetupChoice {
@@ -34,15 +41,28 @@ export function loadChoice(): SetupChoice {
     if (saved && FACTION_BY_ID[saved.factions?.red as FactionId] && FACTION_BY_ID[saved.factions?.black as FactionId]) {
       return {
         factions: { red: saved.factions.red, black: saved.factions.black },
-        mode: saved.mode === 'ai' ? 'ai' : 'local',
+        mode: saved.mode === 'ai' || saved.mode === 'online' ? saved.mode : 'local',
         level: AI_LEVELS.some((l) => l.id === saved.level) ? saved.level : DEFAULT_CHOICE.level,
         human: saved.human === 'black' ? 'black' : 'red',
+        role: saved.role === 'guest' ? 'guest' : 'host',
+        code: '',
       };
     }
   } catch {
     // Storage may be unavailable (private mode); fall back to the default.
   }
   return { ...DEFAULT_CHOICE, factions: { ...DEFAULT_CHOICE.factions } };
+}
+
+/** The faction this player picked: in a connected game only their own grid counts. */
+export function ownFaction(choice: SetupChoice): FactionId {
+  return choice.mode === 'online' && choice.role === 'host' ? choice.factions[choice.human] : choice.factions.black;
+}
+
+/** An invite link (?room=CODE) opens straight to the join form. */
+function applyInvite(choice: SetupChoice): SetupChoice {
+  const code = normalizeCode(new URLSearchParams(location.search).get('room') ?? '');
+  return code ? { ...choice, mode: 'online', role: 'guest', code } : choice;
 }
 
 function saveChoice(choice: SetupChoice) {
@@ -56,7 +76,7 @@ function saveChoice(choice: SetupChoice) {
 /** Pre-game screen where each side picks a faction. */
 export class SetupScreen {
   private readonly root = document.getElementById('setup')!;
-  private choice: SetupChoice = loadChoice();
+  private choice: SetupChoice = applyInvite(loadChoice());
   private resolve: ((c: SetupChoice) => void) | null = null;
 
   constructor(private readonly card: CharacterCard) {
@@ -116,6 +136,32 @@ export class SetupScreen {
         this.renderMode();
       }),
     );
+    document.querySelectorAll<HTMLButtonElement>('#role-list [data-role]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.choice.role = b.dataset.role as OnlineRole;
+        this.renderMode();
+      }),
+    );
+    const input = document.getElementById('join-code') as HTMLInputElement;
+    input.addEventListener('input', () => {
+      this.choice.code = input.value;
+      this.renderMode();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && this.canStart()) this.finish();
+    });
+  }
+
+  /** The side whose faction this player picks; the other is left to the opponent. Null when both are ours. */
+  private ownSide(): Side | null {
+    if (this.choice.mode !== 'online') return null;
+    // A guest does not know their side until the host decides, so any grid will do.
+    return this.choice.role === 'host' ? this.choice.human : 'black';
+  }
+
+  private canStart() {
+    const { mode, role, code } = this.choice;
+    return mode !== 'online' || role === 'host' || normalizeCode(code) !== null;
   }
 
   private masterOk = false;
@@ -131,13 +177,27 @@ export class SetupScreen {
   private renderMode() {
     // A saved master choice falls back to the strongest level that works here.
     if (this.choice.level === 'master' && !this.masterOk) this.choice.level = 'advanced';
-    const { mode, level, human } = this.choice;
+    const { mode, level, human, role } = this.choice;
     this.root.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach((b) => {
       const on = b.dataset.mode === mode;
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
     });
-    (document.getElementById('ai-options') as HTMLElement).hidden = mode !== 'ai';
+    const show = (id: string, on: boolean) => ((document.getElementById(id) as HTMLElement).hidden = !on);
+    show('ai-options', mode === 'ai' || (mode === 'online' && role === 'host'));
+    show('level-group', mode === 'ai');
+    show('side-group', mode === 'ai' || mode === 'online');
+    show('online-options', mode === 'online');
+    show('join-group', mode === 'online' && role === 'guest');
+    document.querySelectorAll<HTMLButtonElement>('#role-list [data-role]').forEach((b) => {
+      b.classList.toggle('on', b.dataset.role === role);
+      b.setAttribute('aria-pressed', String(b.dataset.role === role));
+    });
+    const input = document.getElementById('join-code') as HTMLInputElement;
+    if (document.activeElement !== input) input.value = this.choice.code;
+    const start = document.getElementById('btn-start') as HTMLButtonElement;
+    start.textContent = mode === 'online' ? (role === 'host' ? '建立房間' : '加入房間') : '開始對弈';
+    start.disabled = !this.canStart();
     document.querySelectorAll<HTMLButtonElement>('#level-list [data-level]').forEach((b) => {
       b.classList.toggle('on', b.dataset.level === level);
       b.setAttribute('aria-pressed', String(b.dataset.level === level));
@@ -146,13 +206,24 @@ export class SetupScreen {
       b.classList.toggle('on', b.dataset.human === human);
       b.setAttribute('aria-pressed', String(b.dataset.human === human));
     });
+    const own = this.ownSide();
     for (const side of ['red', 'black'] as Side[]) {
-      const tag = mode === 'ai' ? (side === human ? '（你）' : '（電腦）') : '';
-      this.root.querySelector(`[data-side="${side}"] h3 .who`)!.textContent = tag;
+      const section = this.root.querySelector(`[data-side="${side}"]`) as HTMLElement;
+      const tag =
+        mode === 'ai' ? (side === human ? '（你）' : '（電腦）') : mode === 'online' ? (side === own ? '（你）' : '（對手）') : '';
+      section.querySelector('h3 .who')!.textContent = tag;
+      // The opponent chooses their own faction in a connected game.
+      const waiting = mode === 'online' && side !== own;
+      section.classList.toggle('waiting', waiting);
+      (section.querySelector('.wait-note') as HTMLElement).hidden = !waiting;
     }
   }
 
-  open(): Promise<SetupChoice> {
+  /** Shows the screen; `error` explains why a previous connected game could not start. */
+  open(error?: string): Promise<SetupChoice> {
+    const note = document.getElementById('setup-error') as HTMLElement;
+    note.hidden = !error;
+    note.textContent = error ?? '';
     this.renderMode();
     this.renderSide('red');
     this.renderSide('black');
@@ -163,11 +234,13 @@ export class SetupScreen {
   }
 
   private finish() {
+    if (!this.canStart()) return;
     this.card.hide();
     this.root.hidden = true;
     document.body.classList.remove('setup-open');
-    saveChoice(this.choice);
-    this.resolve?.({ ...this.choice, factions: { ...this.choice.factions } });
+    saveChoice({ ...this.choice, code: '' });
+    const code = normalizeCode(this.choice.code) ?? '';
+    this.resolve?.({ ...this.choice, code, factions: { ...this.choice.factions } });
     this.resolve = null;
   }
 
