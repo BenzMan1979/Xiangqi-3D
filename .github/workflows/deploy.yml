@@ -26,6 +26,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          # Optional: your own STUN/TURN servers as a JSON array, for players behind strict networks.
+          VITE_ICE_SERVERS: ${{ secrets.ICE_SERVERS }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

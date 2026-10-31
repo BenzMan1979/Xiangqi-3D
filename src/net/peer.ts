@@ -1,13 +1,15 @@
 import type { DataConnection, Peer, PeerOptions } from 'peerjs';
+import { iceServers } from './ice';
 import { Transport } from './link';
 import { makeRoomCode, peerIdFor } from './protocol';
 
 /** Free public signalling server by default; `?peerserver=host:port` points at another (testing). */
 function peerOptions(): PeerOptions {
+  const config = { iceServers: iceServers(import.meta.env.VITE_ICE_SERVERS), sdpSemantics: 'unified-plan' };
   const custom = new URLSearchParams(location.search).get('peerserver');
-  if (!custom) return {};
+  if (!custom) return { config };
   const [host, port] = custom.split(':');
-  return { host, port: Number(port) || 9000, path: '/', secure: false };
+  return { host, port: Number(port) || 9000, path: '/', secure: false, config };
 }
 
 async function createPeer(id?: string): Promise<Peer> {
@@ -34,6 +36,12 @@ function wrap(conn: DataConnection, cleanup: () => void): Transport {
   conn.on('error', () => t.onClose?.());
   return t;
 }
+
+/** PeerJS reports a failed WebRTC handshake with a terse English message; say what it means. */
+const CONNECT_FAILED =
+  '無法和對方建立連線：雙方的網路可能無法直接連通（行動網路、公司或校園網路常見）。請換成同一個 Wi-Fi 或稍後再試。';
+const isNegotiationFailure = (err: { type: string; message: string }) =>
+  err.type === 'webrtc' || /negotiation|ice|connection .* failed/i.test(err.message);
 
 const SERVICE_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'browser-incompatible', 'ssl-unavailable']);
 const serviceMessage = '無法連上連線服務，請檢查網路後再試';
@@ -91,14 +99,24 @@ export async function joinRoom(code: string): Promise<Transport> {
         clearTimeout(timer);
         reject(new Error(message));
       };
-      peer.on('error', (err) => fail(err.type === 'peer-unavailable' ? '找不到這個房間' : SERVICE_ERRORS.has(err.type) ? serviceMessage : err.message));
+      peer.on('error', (err) =>
+        fail(
+          err.type === 'peer-unavailable'
+            ? '找不到這個房間'
+            : SERVICE_ERRORS.has(err.type)
+              ? serviceMessage
+              : isNegotiationFailure(err)
+                ? CONNECT_FAILED
+                : err.message,
+        ),
+      );
       peer.on('open', () => {
         const conn = peer.connect(peerIdFor(code), { reliable: true, serialization: 'json' });
         conn.on('open', () => {
           clearTimeout(timer);
           resolve(wrap(conn, () => peer.destroy()));
         });
-        conn.on('error', (err) => fail(err.message));
+        conn.on('error', (err) => fail(isNegotiationFailure(err) ? CONNECT_FAILED : err.message));
       });
     });
   } catch (err) {

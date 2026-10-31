@@ -70,3 +70,19 @@ src/main.ts  遊戲控制器
 
 大師級使用 Fairy-Stockfish（GPL-3.0，原始碼與授權文字見 `public/engine/vendor/Copying.txt`、
 <https://github.com/fairy-stockfish/Fairy-Stockfish>）與 coi-serviceworker（MIT）。專案公開時以 GPL-3.0 釋出。
+
+## 連線對戰連不上時
+
+連線對戰是點對點（WebRTC）。多數網路可以直連；行動網路、公司或校園網路常需要「中繼」（TURN）才能連通。
+預設使用幾個免費公用中繼（含走 443 埠的 TCP／TLS），可能較慢或哪天消失。要更穩定，可以自備中繼服務
+（例如 Metered、Cloudflare 的免費方案，或自己架 coturn），把伺服器清單存成 repo 的 Actions secret `ICE_SERVERS`，格式為 JSON 陣列：
+
+```json
+[
+  { "urls": "stun:stun.example.com:3478" },
+  { "urls": ["turn:turn.example.com:443?transport=tcp", "turns:turn.example.com:443"], "username": "帳號", "credential": "密碼" }
+]
+```
+
+本機開發則用環境變數 `VITE_ICE_SERVERS`。注意：這些帳密會寫進網頁，請用專為此遊戲申請、有流量上限的帳號。
+資料通道本身是端對端加密，中繼看不到走子與聊天內容。
